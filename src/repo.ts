@@ -1,10 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import ignore from 'ignore';
-import simpleGit, { SimpleGit } from 'simple-git';
+import type { Ignore } from 'ignore';
+import { simpleGit, type SimpleGit } from 'simple-git';
 import type { RepoSnapshot, RepoFile } from './types.js';
 import { config } from './config.js';
+
+const require = createRequire(import.meta.url);
+const createIgnore = require('ignore') as typeof import('ignore').default;
 
 const DEFAULT_IGNORES = [
   '.git', 'node_modules', 'dist', 'build', '.next', '.turbo', 'coverage',
@@ -42,7 +46,7 @@ export async function zipRepo(workDir: string, outPath: string): Promise<string>
   return outPath;
 }
 
-async function walk(dir: string, root: string, ig: ReturnType<typeof ignore>): Promise<string[]> {
+async function walk(dir: string, root: string, ig: Ignore): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const out: string[] = [];
   for (const entry of entries) {
@@ -61,7 +65,7 @@ function looksText(file: string): boolean {
 }
 
 export async function snapshotRepo(workDir: string, git: SimpleGit): Promise<RepoSnapshot> {
-  const ig = ignore().add(DEFAULT_IGNORES);
+  const ig = createIgnore().add(DEFAULT_IGNORES);
   try {
     const gitignore = await fs.readFile(path.join(workDir, '.gitignore'), 'utf8');
     ig.add(gitignore);
