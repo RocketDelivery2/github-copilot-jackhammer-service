@@ -8,7 +8,7 @@ import type { RepoSnapshot, RepoFile } from './types.js';
 import { config } from './config.js';
 
 const require = createRequire(import.meta.url);
-const createIgnore = require('ignore') as typeof import('ignore').default;
+const ignoreFactory = require('ignore') as typeof import('ignore').default;
 
 const DEFAULT_IGNORES = [
   '.git', 'node_modules', 'dist', 'build', '.next', '.turbo', 'coverage',
@@ -65,7 +65,7 @@ function looksText(file: string): boolean {
 }
 
 export async function snapshotRepo(workDir: string, git: SimpleGit): Promise<RepoSnapshot> {
-  const ig = createIgnore().add(DEFAULT_IGNORES);
+  const ig = ignoreFactory().add(DEFAULT_IGNORES);
   try {
     const gitignore = await fs.readFile(path.join(workDir, '.gitignore'), 'utf8');
     ig.add(gitignore);
