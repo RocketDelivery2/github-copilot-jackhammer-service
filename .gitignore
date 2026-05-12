@@ -1,6 +1,20 @@
-﻿node_modules/
+node_modules/
 dist/
 coverage/
+logs/
+*.log
+
+# Environment secrets — never commit
 .env
 .env.*
 !.env.example
+
+# Runtime state and snapshots
+.ai/
+*.snapshot.json
+*.snapshot.zip
+*.zip
+
+# OS / editor
+.DS_Store
+Thumbs.db
