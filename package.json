@@ -1,6 +1,26 @@
 {
   "name": "github-copilot-jackhammer-service",
   "version": "0.1.0",
+  "description": "Full-autopilot GitHub Copilot orchestration service (JackHammer) — generates and manages prioritised Copilot coding-agent issue queues, handles active-work continuation, PR lifecycle, and queue rebalancing.",
+  "keywords": [
+    "github-copilot",
+    "copilot-agent",
+    "jackhammer",
+    "ai-automation",
+    "issue-queue",
+    "full-autopilot",
+    "orchestration",
+    "openai",
+    "devops"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RocketDelivery2/github-copilot-jackhammer-service.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RocketDelivery2/github-copilot-jackhammer-service/issues"
+  },
+  "homepage": "https://github.com/RocketDelivery2/github-copilot-jackhammer-service#readme",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +30,8 @@
     "once": "tsx src/index.ts --once",
     "doctor": "tsx src/index.ts --doctor",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "repo:metadata": "bash scripts/set-repo-metadata.sh"
   },
   "dependencies": {
     "@octokit/rest": "^21.1.1",

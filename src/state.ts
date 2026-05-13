@@ -2,12 +2,24 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { QueueState } from './types.js';
 
+const DEFAULT_STATE: QueueState = {
+  createdIssueHashes: {},
+  commandQueue: [],
+  recentCopilotResults: [],
+};
+
 export async function loadState(filePath: string): Promise<QueueState> {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw) as QueueState;
+    const parsed = JSON.parse(raw) as Partial<QueueState>;
+    return {
+      ...DEFAULT_STATE,
+      ...parsed,
+      commandQueue: parsed.commandQueue ?? [],
+      recentCopilotResults: parsed.recentCopilotResults ?? [],
+    };
   } catch {
-    return { createdIssueHashes: {} };
+    return { ...DEFAULT_STATE };
   }
 }
 

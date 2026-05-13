@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import OpenAI, { toFile } from 'openai';
 import { z } from 'zod';
 import { config } from './config.js';
-import type { AiTask, RepoSnapshot } from './types.js';
+import { ensureNotesSection, stripWrapperText } from './brain.js';
+import type { AiTask, CopilotGuidance, CopilotResult, RepoSnapshot, ActiveWorkItem } from './types.js';
 
 const TaskSchema = z.object({
   title: z.string().min(8).max(120),
@@ -19,16 +20,52 @@ const TaskListSchema = z.object({ tasks: z.array(TaskSchema) });
 
 const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 
-export async function createTasks(snapshot: RepoSnapshot, zipPath?: string): Promise<AiTask[]> {
+function buildGuidanceContext(guidance: CopilotGuidance | null, recentResults: CopilotResult[]): string {
+  const parts: string[] = [];
+
+  if (guidance) {
+    if (guidance.recommendedNextPR) {
+      parts.push(`Recommended Next PR from Copilot: ${guidance.recommendedNextPR}`);
+    }
+    if (guidance.planSteps.length) {
+      parts.push(`Plan Steps from Copilot:\n${guidance.planSteps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`);
+    }
+    if (guidance.blockers.length) {
+      parts.push(`Known blockers (do NOT propose tasks that require these to be resolved first):\n${guidance.blockers.map(b => `- ${b}`).join('\n')}`);
+    }
+    if (guidance.notes.length) {
+      parts.push(`Notes (future sequencing/caution context only — do NOT implement unless Goal/Tasks explicitly say so):\n${guidance.notes.map(n => `- ${n}`).join('\n')}`);
+    }
+  }
+
+  if (recentResults.length) {
+    const summary = recentResults.slice(0, 5).map(r =>
+      `- #${r.issueNumber} "${r.title}": ${r.outcome} — ${r.summary}`
+    ).join('\n');
+    parts.push(`Recent Copilot results:\n${summary}`);
+  }
+
+  return parts.join('\n\n');
+}
+
+export async function createTasks(
+  snapshot: RepoSnapshot,
+  zipPath?: string,
+  guidance: CopilotGuidance | null = null,
+  recentResults: CopilotResult[] = [],
+): Promise<AiTask[]> {
   const compactContext = snapshot.files.map(f => `--- FILE: ${f.path} (${f.bytes} bytes) ---\n${f.content}`).join('\n\n');
+  const guidanceContext = buildGuidanceContext(guidance, recentResults);
+
   const inputText = `
 You are creating the GitHub Copilot JackHammer Service coding-agent issue queue for ${snapshot.owner}/${snapshot.repo} on ${snapshot.baseBranch}.
 Current commit: ${snapshot.commitSha}
 Recent git log:\n${snapshot.recentChanges}
 Package/readme hints:\n${snapshot.packageHints.join('\n\n').slice(0, 80_000)}
-
+${guidanceContext ? `\n${guidanceContext}\n` : ''}
 Generate up to ${config.MAX_TASKS_PER_RUN} small, reviewable tasks that GitHub Copilot can implement as independent PRs.
 Only propose tasks supported by the repo context below. Prefer tests, bugs, maintainability, UX polish, and clear acceptance criteria.
+Every copilot_prompt field MUST end with a Notes section containing at minimum "Notes:\\n- None." unless there are real notes.
 Return strict JSON matching this shape: {"tasks":[...]}. Do not include markdown.
 
 Repo context:\n${compactContext}
@@ -82,5 +119,46 @@ Repo context:\n${compactContext}
   });
 
   const parsed = TaskListSchema.parse(JSON.parse(response.output_text));
-  return parsed.tasks;
+  // Ensure every copilot_prompt has a Notes section and strip wrapper text.
+  return parsed.tasks.map(task => ({
+    ...task,
+    copilot_prompt: ensureNotesSection(stripWrapperText(task.copilot_prompt)),
+  }));
+}
+
+/**
+ * Generates a continuation comment for an active work item.
+ * Used when Copilot has asked a question or needs nudging to continue.
+ */
+export async function createContinuationComment(
+  activeWork: ActiveWorkItem,
+  guidance: CopilotGuidance | null,
+  recentResults: CopilotResult[],
+  prContext: string,
+): Promise<string> {
+  const guidanceContext = buildGuidanceContext(guidance, recentResults);
+  const inputText = `
+You are the GitHub Copilot JackHammer Service autopilot continuing work on issue #${activeWork.issueNumber}: "${activeWork.title}".
+
+${prContext ? `Current PR context:\n${prContext}\n` : ''}
+${guidanceContext ? `Copilot guidance:\n${guidanceContext}\n` : ''}
+
+Copilot has either asked a clarifying question or needs a continuation nudge.
+Write a brief, direct continuation comment (2-5 sentences) that:
+1. Answers any clarifying question with a clear direction.
+2. Instructs Copilot to continue implementing the task as described.
+3. References any relevant plan steps or recommended next actions.
+4. Does NOT start new work outside the current issue scope.
+5. Ends with "Please continue." or a similar direct prompt.
+
+Return only the comment text, no JSON wrapper.
+`;
+
+  const response = await client.responses.create({
+    model: config.OPENAI_MODEL,
+    instructions: 'You are writing a concise GitHub comment to continue a Copilot coding task. Be direct and actionable.',
+    input: [{ role: 'user', content: [{ type: 'input_text', text: inputText }] }],
+  });
+
+  return response.output_text.trim();
 }
