@@ -20,7 +20,15 @@ const ConfigSchema = z.object({
   STATE_FILE: z.string().default('.ai/state.json'),
   DRY_RUN: boolish.default(''),
   COPILOT_ASSIGNEE: z.string().optional().default(''),
-  ISSUE_LABELS: z.string().default('ai-task,jackhammer-queue')
+  ISSUE_LABELS: z.string().default('ai-task,jackhammer-queue'),
+  FULL_AUTOPILOT: boolish.default(''),
+  AUTO_MERGE_PR: boolish.default(''),
+  AUTO_APPROVE_PR: boolish.default(''),
+  AUTO_CLOSE_ISSUE: boolish.default(''),
+  AUTO_DELETE_BRANCH: boolish.default(''),
+  MAX_RUNTIME_HOURS: z.coerce.number().positive().default(24),
+  BRAIN_FALLBACK_ENABLED: boolish.default('true'),
+  RUN_ONCE: boolish.default(''),
 });
 
 export const config = ConfigSchema.parse(process.env);

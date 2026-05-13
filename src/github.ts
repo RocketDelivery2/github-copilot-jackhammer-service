@@ -77,3 +77,238 @@ export async function findExistingIssueByHash(hash: string): Promise<{ number: n
   const item = res.data.items[0];
   return item ? { number: item.number, url: item.html_url } : null;
 }
+
+// ─── Issue reading ──────────────────────────────────────────────────────────
+
+export type IssueData = {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  url: string;
+};
+
+export async function getIssue(issueNumber: number): Promise<IssueData> {
+  const res = await octokit.issues.get({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    issue_number: issueNumber,
+  });
+  return {
+    number: res.data.number,
+    title: res.data.title,
+    body: res.data.body ?? '',
+    state: res.data.state,
+    url: res.data.html_url,
+  };
+}
+
+export async function getIssueComments(issueNumber: number): Promise<string[]> {
+  const res = await octokit.issues.listComments({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    issue_number: issueNumber,
+    per_page: 100,
+  });
+  return res.data.map(c => c.body ?? '');
+}
+
+// ─── Linked PR discovery ────────────────────────────────────────────────────
+
+export type LinkedPR = {
+  number: number;
+  url: string;
+  title: string;
+  state: string;
+  headRef: string;
+  merged: boolean;
+};
+
+export async function findLinkedPRs(issueNumber: number): Promise<LinkedPR[]> {
+  // Search for PRs that mention the issue number in their body or title.
+  const q = `repo:${config.GITHUB_OWNER}/${config.GITHUB_REPO} is:pr #${issueNumber}`;
+  try {
+    const res = await octokit.search.issuesAndPullRequests({ q, per_page: 10 });
+    const prNumbers = res.data.items.map(i => i.number);
+    const results: LinkedPR[] = [];
+    for (const n of prNumbers) {
+      try {
+        const pr = await octokit.pulls.get({ owner: config.GITHUB_OWNER, repo: config.GITHUB_REPO, pull_number: n });
+        results.push({
+          number: pr.data.number,
+          url: pr.data.html_url,
+          title: pr.data.title,
+          state: pr.data.state,
+          headRef: pr.data.head.ref,
+          merged: pr.data.merged ?? false,
+        });
+      } catch { /* ignore individual PR fetch errors */ }
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+// ─── PR reading ─────────────────────────────────────────────────────────────
+
+export type PRData = {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  url: string;
+  headRef: string;
+  merged: boolean;
+  mergeable: boolean | null;
+};
+
+export async function getPR(prNumber: number): Promise<PRData> {
+  const res = await octokit.pulls.get({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    pull_number: prNumber,
+  });
+  return {
+    number: res.data.number,
+    title: res.data.title,
+    body: res.data.body ?? '',
+    state: res.data.state,
+    url: res.data.html_url,
+    headRef: res.data.head.ref,
+    merged: res.data.merged ?? false,
+    mergeable: res.data.mergeable ?? null,
+  };
+}
+
+export async function getPRComments(prNumber: number): Promise<string[]> {
+  const res = await octokit.issues.listComments({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    issue_number: prNumber,
+    per_page: 100,
+  });
+  return res.data.map(c => c.body ?? '');
+}
+
+export async function getPRReviews(prNumber: number): Promise<Array<{ state: string; body: string }>> {
+  const res = await octokit.pulls.listReviews({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    pull_number: prNumber,
+    per_page: 100,
+  });
+  return res.data.map(r => ({ state: r.state, body: r.body ?? '' }));
+}
+
+export type CheckRun = {
+  name: string;
+  status: string;
+  conclusion: string | null;
+};
+
+export async function getPRChecks(prNumber: number): Promise<CheckRun[]> {
+  const pr = await octokit.pulls.get({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    pull_number: prNumber,
+  });
+  const sha = pr.data.head.sha;
+  const res = await octokit.checks.listForRef({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    ref: sha,
+    per_page: 100,
+  });
+  return res.data.check_runs.map(c => ({
+    name: c.name,
+    status: c.status,
+    conclusion: c.conclusion ?? null,
+  }));
+}
+
+export function allChecksPassed(checks: CheckRun[]): boolean {
+  if (checks.length === 0) return false;
+  return checks.every(c => c.status === 'completed' && c.conclusion === 'success');
+}
+
+export function anyCheckFailed(checks: CheckRun[]): boolean {
+  return checks.some(c => c.status === 'completed' && (c.conclusion === 'failure' || c.conclusion === 'error'));
+}
+
+// ─── Posting comments ───────────────────────────────────────────────────────
+
+export async function postComment(issueOrPRNumber: number, body: string): Promise<void> {
+  if (config.DRY_RUN) {
+    console.log(`[DRY RUN] Would post comment on #${issueOrPRNumber}:\n${body.slice(0, 200)}...`);
+    return;
+  }
+  await octokit.issues.createComment({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    issue_number: issueOrPRNumber,
+    body,
+  });
+}
+
+// ─── PR actions ─────────────────────────────────────────────────────────────
+
+export async function approvePR(prNumber: number): Promise<void> {
+  if (config.DRY_RUN) {
+    console.log(`[DRY RUN] Would approve PR #${prNumber}`);
+    return;
+  }
+  await octokit.pulls.createReview({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    pull_number: prNumber,
+    event: 'APPROVE',
+  });
+  console.log(`Approved PR #${prNumber}`);
+}
+
+export async function mergePR(prNumber: number): Promise<void> {
+  if (config.DRY_RUN) {
+    console.log(`[DRY RUN] Would merge PR #${prNumber}`);
+    return;
+  }
+  await octokit.pulls.merge({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    pull_number: prNumber,
+    merge_method: 'squash',
+  });
+  console.log(`Merged PR #${prNumber}`);
+}
+
+export async function closeIssue(issueNumber: number): Promise<void> {
+  if (config.DRY_RUN) {
+    console.log(`[DRY RUN] Would close issue #${issueNumber}`);
+    return;
+  }
+  await octokit.issues.update({
+    owner: config.GITHUB_OWNER,
+    repo: config.GITHUB_REPO,
+    issue_number: issueNumber,
+    state: 'closed',
+  });
+  console.log(`Closed issue #${issueNumber}`);
+}
+
+export async function deleteBranch(branchName: string): Promise<void> {
+  if (config.DRY_RUN) {
+    console.log(`[DRY RUN] Would delete branch ${branchName}`);
+    return;
+  }
+  try {
+    await octokit.git.deleteRef({
+      owner: config.GITHUB_OWNER,
+      repo: config.GITHUB_REPO,
+      ref: `heads/${branchName}`,
+    });
+    console.log(`Deleted branch ${branchName}`);
+  } catch (err: any) {
+    if (err.status !== 422) throw err;
+    console.log(`Branch ${branchName} already deleted or not found.`);
+  }
+}
