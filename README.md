@@ -51,6 +51,20 @@ npm run dev
 
 ---
 
+## Next steps after cloning
+
+See [`docs/NEXT_STEPS.md`](./docs/NEXT_STEPS.md) for the full ordered workflow:
+
+1. Pull latest main and validate locally (`npm install`, `npm test`, `npm run build`, `npm run lint`)
+2. Apply repository About metadata (`npm run repo:metadata`)
+3. Add GitHub Actions CI (`.github/workflows/test-and-build.yml`)
+4. Configure branch protection after CI is green
+5. Start a safe dry run (`DRY_RUN=true`)
+6. Create one real queue issue (`DRY_RUN=false`, `RUN_ONCE=true`)
+7. Enable Copilot assignment and full autopilot only after the single-item flow works
+
+---
+
 ## Environment variables
 
 See [`.env.example`](./.env.example) for the full reference.
