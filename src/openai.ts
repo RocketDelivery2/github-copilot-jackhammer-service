@@ -5,6 +5,15 @@ import { config } from './config.js';
 import { ensureNotesSection, stripWrapperText } from './brain.js';
 import type { AiTask, CopilotGuidance, CopilotResult, RepoSnapshot, ActiveWorkItem } from './types.js';
 
+const FEEDBACK_LOOP_PROMPT_POLICY = `
+Feedback-loop policy:
+- Active work first: if there is an active unresolved issue/PR, continue that before starting new work.
+- Answer Copilot questions first with direct continuation guidance.
+- Failed checks first: prioritize build/test/lint/check failures before feature expansion.
+- Prefer small, reviewable, validated PRs with explicit acceptance criteria and test plans.
+- Never bypass checks, never include secrets, and avoid unrelated or broad risky rewrites.
+`.trim();
+
 const TaskSchema = z.object({
   title: z.string().min(8).max(120),
   priority: z.enum(['low', 'medium', 'high']),
@@ -64,8 +73,12 @@ Recent git log:\n${snapshot.recentChanges}
 Package/readme hints:\n${snapshot.packageHints.join('\n\n').slice(0, 80_000)}
 ${guidanceContext ? `\n${guidanceContext}\n` : ''}
 Generate up to ${config.MAX_TASKS_PER_RUN} small, reviewable tasks that GitHub Copilot can implement as independent PRs.
-Only propose tasks supported by the repo context below. Prefer tests, bugs, maintainability, UX polish, and clear acceptance criteria.
-Every copilot_prompt field MUST end with a Notes section containing at minimum "Notes:\\n- None." unless there are real notes.
+Only propose tasks supported by the repo context below. Choose the highest-value next Copilot command and prefer proven architecture patterns, efficient algorithms, and clean design.
+Apply corporate software engineering standards: correctness, build stability, test coverage, lint/format quality, security, API contract stability, validation/error handling, maintainability, observability, operational safety, rollback safety, and least-risk incremental delivery.
+Prefer small testable commands with clear validation steps. Prioritize blockers and reliability work before new feature polish. Never start the next command while active work is unresolved.
+Penalize broad risky rewrites, missing tests, branch spam, secrets exposure, bypassing checks, and unrelated changes.
+Every copilot_prompt field MUST end with a Notes section containing at minimum "Notes:\n- None." unless there are real notes.
+${FEEDBACK_LOOP_PROMPT_POLICY}
 Return strict JSON matching this shape: {"tasks":[...]}. Do not include markdown.
 
 Repo context:\n${compactContext}
@@ -81,7 +94,7 @@ Repo context:\n${compactContext}
 
   const response = await client.responses.create({
     model: config.OPENAI_MODEL,
-    instructions: 'You are a senior full-stack engineer producing concise, actionable JackHammer queue GitHub issues for GitHub Copilot coding agent. Always return parseable JSON only.',
+    instructions: 'You are a senior staff-level engineer producing concise, actionable JackHammer queue GitHub issues for GitHub Copilot coding agent. Select the highest-value next command, enforce industry-standard engineering quality, and keep tasks small, validated, and reviewable. Enforce feedback-loop policy: active work first, answer Copilot questions first, fix failed checks first, then continue with reprioritized queue. Never bypass checks, add secrets, or propose broad unvalidated rewrites. Always return parseable JSON only.',
     input: [{ role: 'user', content }],
     text: {
       format: {
