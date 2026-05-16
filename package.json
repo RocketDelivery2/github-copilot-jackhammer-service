@@ -31,8 +31,6 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "once": "tsx src/index.ts --once",
     "doctor": "tsx src/index.ts --doctor",
-    "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "lint": "tsc --noEmit",
     "repo:metadata": "bash scripts/set-repo-metadata.sh"
   },
   "dependencies": {
