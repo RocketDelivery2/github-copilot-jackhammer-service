@@ -16,6 +16,7 @@ import { taskHash } from './hash.js';
 import { loadState, saveState } from './state.js';
 import { extractCopilotGuidance, rebalanceQueue, detectCopilotQuestion } from './brain.js';
 import type { ActiveWorkItem, CommandQueueItem, CopilotResult, QueueState } from './types.js';
+import { applyIndustryStandardsPriority } from './standards.js';
 
 const argv = yargs(hideBin(process.argv))
   .option('once', { type: 'boolean', default: false })
@@ -273,12 +274,14 @@ async function runOnce(): Promise<void> {
     state.extractedCopilotGuidance ?? null,
     state.recentCopilotResults,
   );
-  console.log(`OpenAI proposed ${tasks.length} task(s).`);
+  const prioritizedTasks = applyIndustryStandardsPriority(tasks, snapshot);
+  console.log(`OpenAI proposed ${tasks.length} task(s); Industry Standards Brain prioritized queue order.`);
 
   await ensureLabels();
+  for (const task of prioritizedTasks) {
   let firstNewIssue: ActiveWorkItem | null = null;
 
-  for (const task of tasks) {
+  for (const task of prioritizedTasks) {
     const hash = taskHash(task);
     if (state.createdIssueHashes[hash]) {
       console.log(`Skip duplicate from state: ${task.title}`);

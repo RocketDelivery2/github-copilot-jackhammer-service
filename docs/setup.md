@@ -198,3 +198,21 @@ All three must pass before enabling full autopilot.
 | `JackHammer.MergeMethod` | `squash` |
 
 Store all `Sensitive` values as Octopus sensitive variables. Never store them in source control.
+
+---
+
+## 8. Industry standards queue prioritization
+
+The queue-ranking brain and scoring model are documented in [`docs/INDUSTRY_STANDARDS_BRAIN.md`](./INDUSTRY_STANDARDS_BRAIN.md).
+
+---
+
+## 9. ChatGPT-to-Copilot handoff formatting
+
+Raw handoff parsing and canonical Copilot command formatting are documented in [`docs/CHATGPT_HANDOFF_BRAIN.md`](./CHATGPT_HANDOFF_BRAIN.md).
+
+---
+
+## 10. Feedback-loop queue policy
+
+JackHammer should continuously exchange context between ChatGPT/OpenAI and Copilot coding agent: gather latest snapshot, git/PR/check/log context (with recent logs summarized or truncated), generate or refine one Copilot command, add and reprioritize queue, finish active work first (questions and failed checks before new work), then merge/sync and repeat; see [`docs/FEEDBACK_LOOP_QUEUE.md`](./FEEDBACK_LOOP_QUEUE.md).

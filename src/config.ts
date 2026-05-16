@@ -1,7 +1,10 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
-const boolish = z.string().optional().transform(v => ['true', '1', 'yes'].includes((v ?? '').toLowerCase()));
+const boolish = z.preprocess(v => {
+  if (typeof v !== 'string') return false;
+  return ['true', '1', 'yes'].includes(v.toLowerCase());
+}, z.boolean());
 
 const ConfigSchema = z.object({
   OPENAI_API_KEY: z.string().min(1),

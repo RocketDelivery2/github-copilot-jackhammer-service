@@ -27,6 +27,8 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
+    "test": "tsx --test src/**/*.test.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
     "once": "tsx src/index.ts --once",
     "doctor": "tsx src/index.ts --doctor",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",

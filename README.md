@@ -284,3 +284,18 @@ See [`docs/setup.md`](./docs/setup.md) for:
 - Full JackHammer repo GitHub settings
 - Full TeamBuilder (serviced repo) GitHub settings
 - Validation steps
+
+See [`docs/INDUSTRY_STANDARDS_BRAIN.md`](./docs/INDUSTRY_STANDARDS_BRAIN.md) for:
+- Industry standards used by queue scoring
+- How candidate Copilot commands are ranked and rebalanced
+- Backend-first and frontend-scale sequencing strategy
+
+See [`docs/CHATGPT_HANDOFF_BRAIN.md`](./docs/CHATGPT_HANDOFF_BRAIN.md) for:
+- How raw ChatGPT/Copilot/terminal handoff input is converted into one canonical Copilot command
+- How exclusions, validation steps, and merge/sync instructions are preserved
+- README-only docs PR handoff examples
+
+See [`docs/FEEDBACK_LOOP_QUEUE.md`](./docs/FEEDBACK_LOOP_QUEUE.md) for:
+- The continuous context exchange loop between ChatGPT/OpenAI and Copilot coding agent
+- Active-work-first queue behavior and continuation policy
+- Prompt contract expectations for concise logs and paste-ready commands
