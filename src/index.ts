@@ -278,7 +278,6 @@ async function runOnce(): Promise<void> {
   console.log(`OpenAI proposed ${tasks.length} task(s); Industry Standards Brain prioritized queue order.`);
 
   await ensureLabels();
-  for (const task of prioritizedTasks) {
   let firstNewIssue: ActiveWorkItem | null = null;
 
   for (const task of prioritizedTasks) {

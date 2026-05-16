@@ -3,8 +3,16 @@ import OpenAI, { toFile } from 'openai';
 import { z } from 'zod';
 import { config } from './config.js';
 import { ensureNotesSection, stripWrapperText } from './brain.js';
-import { FEEDBACK_LOOP_PROMPT_POLICY } from './feedback-loop.js';
 import type { AiTask, CopilotGuidance, CopilotResult, RepoSnapshot, ActiveWorkItem } from './types.js';
+
+const FEEDBACK_LOOP_PROMPT_POLICY = `
+Feedback-loop policy:
+- Active work first: if there is an active unresolved issue/PR, continue that before starting new work.
+- Answer Copilot questions first with direct continuation guidance.
+- Failed checks first: prioritize build/test/lint/check failures before feature expansion.
+- Prefer small, reviewable, validated PRs with explicit acceptance criteria and test plans.
+- Never bypass checks, never include secrets, and avoid unrelated or broad risky rewrites.
+`.trim();
 
 const TaskSchema = z.object({
   title: z.string().min(8).max(120),
