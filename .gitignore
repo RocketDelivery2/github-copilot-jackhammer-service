@@ -18,3 +18,6 @@ logs/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Visual Studio local workspace files
+.vs/
