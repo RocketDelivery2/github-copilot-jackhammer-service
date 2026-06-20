@@ -32,6 +32,8 @@ const ConfigSchema = z.object({
   MAX_RUNTIME_HOURS: z.coerce.number().positive().default(24),
   BRAIN_FALLBACK_ENABLED: boolish.default('true'),
   ADAPTIVE_QUEUE_ENABLED: boolish.default(''),
+  ADAPTIVE_EVENT_JOURNAL_PATH: z.string().default('.ai/adaptive-preview-event-journal.json'),
+  ADAPTIVE_EVENT_JOURNAL_RETENTION: z.coerce.number().int().nonnegative().default(200),
   RUN_ONCE: boolish.default(''),
 });
 

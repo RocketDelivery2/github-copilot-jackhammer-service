@@ -1,6 +1,6 @@
 # Adaptive Execution Queue
 
-The Adaptive Execution Queue is a future orchestration layer for turning plans, agent output, validation results, and human decisions into a deterministic work queue. It is guarded by `ADAPTIVE_QUEUE_ENABLED=false` by default. When disabled, `src/index.ts` continues using the existing scheduling flow. When enabled, the service can build a preview from current runtime state without replacing current behavior.
+The Adaptive Execution Queue is a future orchestration layer for turning plans, agent output, validation results, and human decisions into a deterministic work queue. It is guarded by `ADAPTIVE_QUEUE_ENABLED=false` by default. When disabled, `src/index.ts` continues using the existing scheduling flow and does not write adaptive journal records. When enabled, the service can build a preview from current runtime state without replacing current behavior.
 
 ## Runtime Adapter
 
@@ -17,6 +17,8 @@ Captured results can be converted into `ExecutionEvent` records and `QueueSignal
 ## Event Journal
 
 `src/orchestration/event-journal.ts` provides preview-only JSON persistence for captured adaptive queue feedback. It stores `ExecutionEvent` records and `QueueSignal` records with a `createdAt` timestamp, source identifier, and optional `workItemId`.
+
+When `ADAPTIVE_QUEUE_ENABLED=true`, the preview adapter may append adaptive preview records to `ADAPTIVE_EVENT_JOURNAL_PATH` (default: `.ai/adaptive-preview-event-journal.json`) using `ADAPTIVE_EVENT_JOURNAL_RETENTION` (default: `200`). This remains isolated from production scheduling and does not alter legacy queue execution.
 
 The journal is intentionally isolated from production scheduling. Loading a missing journal file returns an empty list, appending records preserves existing entries, malformed journal contents fail with a clear error, and a retention helper can keep only the latest N records.
 
