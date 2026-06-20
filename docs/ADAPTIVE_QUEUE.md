@@ -6,6 +6,14 @@ The Adaptive Execution Queue is a future orchestration layer for turning plans, 
 
 `src/orchestration/adapter.ts` maps existing `ActiveWorkItem`, `CommandQueueItem`, `CopilotGuidance`, and recent Copilot result inputs into `WorkItem` and `QueueSignal` records. The adapter is deterministic and side-effect free. The current runtime branch only produces an adaptive preview when `ADAPTIVE_QUEUE_ENABLED=true`; legacy scheduling remains active.
 
+## Command Capture
+
+`src/orchestration/command-runner.ts` provides an isolated command execution capture primitive for future adaptive feedback loops. It records the displayed command, executable, args, cwd, stdout, stderr, exit code, start and completion timestamps, duration, timeout, and timed-out state.
+
+The runner uses `spawn` with `shell: false` and a finite timeout by default. It is not wired into production scheduling, so no command is executed by the runtime flow unless future code explicitly calls it behind an enabled feature flag.
+
+Captured results can be converted into `ExecutionEvent` records and `QueueSignal` records. Build, test, and lint output flows through the existing signal classifier, while timed-out or otherwise unclassified nonzero exits become blocker signals.
+
 ## Feedback-Driven Queue
 
 Queue items are represented as `WorkItem` records. They can be feature/refactor work, fix-first items, validation commands, research tasks, conversation tasks, shell commands, or agent commands. Execution output is converted into `QueueSignal` records, then the queue is re-scored in a deterministic order.
