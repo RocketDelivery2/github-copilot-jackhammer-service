@@ -14,6 +14,12 @@ The runner uses `spawn` with `shell: false` and a finite timeout by default. It 
 
 Captured results can be converted into `ExecutionEvent` records and `QueueSignal` records. Build, test, and lint output flows through the existing signal classifier, while timed-out or otherwise unclassified nonzero exits become blocker signals.
 
+## Event Journal
+
+`src/orchestration/event-journal.ts` provides preview-only JSON persistence for captured adaptive queue feedback. It stores `ExecutionEvent` records and `QueueSignal` records with a `createdAt` timestamp, source identifier, and optional `workItemId`.
+
+The journal is intentionally isolated from production scheduling. Loading a missing journal file returns an empty list, appending records preserves existing entries, malformed journal contents fail with a clear error, and a retention helper can keep only the latest N records.
+
 ## Feedback-Driven Queue
 
 Queue items are represented as `WorkItem` records. They can be feature/refactor work, fix-first items, validation commands, research tasks, conversation tasks, shell commands, or agent commands. Execution output is converted into `QueueSignal` records, then the queue is re-scored in a deterministic order.
