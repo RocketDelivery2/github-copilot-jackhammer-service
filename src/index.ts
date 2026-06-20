@@ -18,9 +18,11 @@ import { extractCopilotGuidance, rebalanceQueue, detectCopilotQuestion } from '.
 import type { ActiveWorkItem, CommandQueueItem, CopilotResult, QueueState } from './types.js';
 import { applyIndustryStandardsPriority } from './standards.js';
 import {
+  captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
   createAdaptiveQueuePreview,
 } from './orchestration/adapter.js';
+import type { CommandExecutionRequest } from './orchestration/command-runner.js';
 
 const argv = yargs(hideBin(process.argv))
   .option('once', { type: 'boolean', default: false })
@@ -220,6 +222,29 @@ function recordResult(state: QueueState, active: ActiveWorkItem, outcome: Copilo
   ].slice(0, 20); // keep last 20 results
 }
 
+function buildAdaptivePreviewCaptureRequests(state: QueueState): CommandExecutionRequest[] {
+  return state.recentCopilotResults.slice(0, 3).map(result => ({
+    command: process.execPath,
+    args: ['-e', previewCaptureScriptForResult(result)],
+    cwd: process.cwd(),
+    timeoutMs: 2_000,
+    workItemId: `issue:${result.issueNumber}`,
+  }));
+}
+
+function previewCaptureScriptForResult(result: CopilotResult): string {
+  const summary = JSON.stringify(result.summary || result.title || 'No summary provided.');
+  if (result.outcome === 'error' || result.outcome === 'blocked') {
+    return `process.stderr.write(${summary}); process.exit(1);`;
+  }
+
+  if (result.outcome === 'question') {
+    return `process.stderr.write(${summary});`;
+  }
+
+  return `process.stdout.write(${summary});`;
+}
+
 // ─── Main run loop ───────────────────────────────────────────────────────────
 
 async function runOnce(): Promise<void> {
@@ -235,17 +260,26 @@ async function runOnce(): Promise<void> {
   }
 
   if (config.ADAPTIVE_QUEUE_ENABLED) {
+    const previewCapture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests: buildAdaptivePreviewCaptureRequests(state),
+    });
     const adaptivePreview = createAdaptiveQueuePreview({
       activeWorkItem: state.activeWorkItem,
       commandQueue: state.commandQueue,
       guidance: state.extractedCopilotGuidance ?? null,
       recentResults: state.recentCopilotResults,
+      executionEvents: previewCapture.executionEvents,
+      queueSignals: previewCapture.queueSignals,
     }, { enabled: true });
     const journalRecords = await captureAdaptivePreviewJournal(adaptivePreview, {
       enabled: true,
       journalPath: path.resolve(process.cwd(), config.ADAPTIVE_EVENT_JOURNAL_PATH),
       retentionLimit: config.ADAPTIVE_EVENT_JOURNAL_RETENTION,
     });
+    if (previewCapture.commandResults.length > 0) {
+      console.log(`Adaptive queue preview captured ${previewCapture.commandResults.length} command result(s).`);
+    }
     if (journalRecords.length > 0) {
       console.log(`Adaptive queue preview appended ${journalRecords.length} journal record(s).`);
     }
