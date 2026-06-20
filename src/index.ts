@@ -17,6 +17,7 @@ import { loadState, saveState } from './state.js';
 import { extractCopilotGuidance, rebalanceQueue, detectCopilotQuestion } from './brain.js';
 import type { ActiveWorkItem, CommandQueueItem, CopilotResult, QueueState } from './types.js';
 import { applyIndustryStandardsPriority } from './standards.js';
+import { createAdaptiveQueuePreview } from './orchestration/adapter.js';
 
 const argv = yargs(hideBin(process.argv))
   .option('once', { type: 'boolean', default: false })
@@ -228,6 +229,16 @@ async function runOnce(): Promise<void> {
   const state = await loadState(statePath);
   if (state.lastCommitSha === snapshot.commitSha) {
     console.log(`No new commit since ${snapshot.commitSha}; checking active work and queue.`);
+  }
+
+  if (config.ADAPTIVE_QUEUE_ENABLED) {
+    const adaptivePreview = createAdaptiveQueuePreview({
+      activeWorkItem: state.activeWorkItem,
+      commandQueue: state.commandQueue,
+      guidance: state.extractedCopilotGuidance ?? null,
+      recentResults: state.recentCopilotResults,
+    }, { enabled: true });
+    console.log(`Adaptive queue preview planned ${adaptivePreview.scheduledWorkItemIds.length} item(s); existing scheduling flow remains active.`);
   }
 
   // 2. Active-work-first: handle active work before doing anything else.

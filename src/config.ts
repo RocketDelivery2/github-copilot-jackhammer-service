@@ -31,8 +31,15 @@ const ConfigSchema = z.object({
   AUTO_DELETE_BRANCH: boolish.default(''),
   MAX_RUNTIME_HOURS: z.coerce.number().positive().default(24),
   BRAIN_FALLBACK_ENABLED: boolish.default('true'),
+  ADAPTIVE_QUEUE_ENABLED: boolish.default(''),
   RUN_ONCE: boolish.default(''),
 });
 
-export const config = ConfigSchema.parse(process.env);
+export type AppConfig = z.infer<typeof ConfigSchema>;
+
+export function parseConfig(env: Record<string, unknown>): AppConfig {
+  return ConfigSchema.parse(env);
+}
+
+export const config = parseConfig(process.env);
 export const labels = config.ISSUE_LABELS.split(',').map(s => s.trim()).filter(Boolean);
