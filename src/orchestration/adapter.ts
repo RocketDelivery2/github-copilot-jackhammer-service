@@ -1,14 +1,22 @@
 import { planRunnableBatch } from './parallelism.js';
 import { rebalanceWorkItems } from './rebalance.js';
 import { classifyExecutionSignals } from './signals.js';
+import {
+  appendEventJournalRecords,
+  createExecutionEventJournalRecord,
+  createQueueSignalJournalRecord,
+} from './event-journal.js';
 import type { ActiveWorkItem, CommandQueueItem, CopilotGuidance, CopilotResult } from '../types.js';
-import type { QueueSignal, WorkItem } from './types.js';
+import type { EventJournalRecord } from './event-journal.js';
+import type { ExecutionEvent, QueueSignal, WorkItem } from './types.js';
 
 export type AdaptiveQueueRuntimeInputs = {
   activeWorkItem?: ActiveWorkItem;
   commandQueue?: readonly CommandQueueItem[];
   guidance?: CopilotGuidance | null;
   recentResults?: readonly CopilotResult[];
+  executionEvents?: readonly ExecutionEvent[];
+  queueSignals?: readonly QueueSignal[];
 };
 
 export type AdaptiveScheduler = (
@@ -26,8 +34,22 @@ export type AdaptiveQueuePreview = {
   mode: 'legacy' | 'adaptive-preview';
   schedulerInvoked: boolean;
   workItems: WorkItem[];
+  executionEvents: ExecutionEvent[];
   signals: QueueSignal[];
   scheduledWorkItemIds: string[];
+};
+
+export type AdaptivePreviewJournalOptions = {
+  enabled: boolean;
+  journalPath: string;
+  retentionLimit?: number;
+  source?: string;
+  now?: () => string;
+  appendRecords?: (
+    filePath: string,
+    records: readonly EventJournalRecord[],
+    options?: { retentionLimit?: number },
+  ) => Promise<EventJournalRecord[]>;
 };
 
 export function createAdaptiveQueuePreview(
@@ -39,12 +61,14 @@ export function createAdaptiveQueuePreview(
       mode: 'legacy',
       schedulerInvoked: false,
       workItems: [],
+      executionEvents: [],
       signals: [],
       scheduledWorkItemIds: [],
     };
   }
 
   const workItems = mapRuntimeInputsToWorkItems(inputs);
+  const executionEvents = mapRuntimeInputsToExecutionEvents(inputs);
   const signals = mapRuntimeInputsToQueueSignals(inputs);
   const scheduler = options.scheduler ?? defaultAdaptiveScheduler;
   const scheduledItems = scheduler(workItems, signals).map(cloneWorkItem);
@@ -55,9 +79,45 @@ export function createAdaptiveQueuePreview(
     mode: 'adaptive-preview',
     schedulerInvoked: true,
     workItems,
+    executionEvents,
     signals,
     scheduledWorkItemIds: batch.map(item => item.id),
   };
+}
+
+export async function captureAdaptivePreviewJournal(
+  preview: AdaptiveQueuePreview,
+  options: AdaptivePreviewJournalOptions,
+): Promise<EventJournalRecord[]> {
+  if (!options.enabled || preview.mode !== 'adaptive-preview') {
+    return [];
+  }
+
+  const createdAt = (options.now ?? (() => new Date().toISOString()))();
+  const source = options.source ?? 'adaptive-preview';
+  const records: EventJournalRecord[] = [
+    ...preview.executionEvents.map(event =>
+      createExecutionEventJournalRecord({
+        createdAt,
+        source,
+        workItemId: event.workItemId,
+        event,
+      })),
+    ...preview.signals.map(signal =>
+      createQueueSignalJournalRecord({
+        createdAt,
+        source,
+        workItemId: signal.workItemId,
+        signal,
+      })),
+  ];
+
+  if (records.length === 0) {
+    return [];
+  }
+
+  const appendRecords = options.appendRecords ?? appendEventJournalRecords;
+  return appendRecords(options.journalPath, records, { retentionLimit: options.retentionLimit });
 }
 
 export function mapRuntimeInputsToWorkItems(inputs: AdaptiveQueueRuntimeInputs): WorkItem[] {
@@ -111,8 +171,15 @@ export function mapRuntimeInputsToQueueSignals(inputs: AdaptiveQueueRuntimeInput
 
   addGuidanceSignals(signals, inputs.guidance ?? null, currentWorkItemId);
   addResultSignals(signals, inputs.recentResults ?? []);
+  for (const signal of inputs.queueSignals ?? []) {
+    pushUniqueSignal(signals, cloneQueueSignal(signal));
+  }
 
   return signals;
+}
+
+export function mapRuntimeInputsToExecutionEvents(inputs: AdaptiveQueueRuntimeInputs): ExecutionEvent[] {
+  return (inputs.executionEvents ?? []).map(cloneExecutionEvent);
 }
 
 function defaultAdaptiveScheduler(
@@ -249,5 +316,27 @@ function cloneWorkItem(item: WorkItem): WorkItem {
     dependsOn: item.dependsOn ? [...item.dependsOn] : undefined,
     readPaths: item.readPaths ? [...item.readPaths] : undefined,
     writePaths: item.writePaths ? [...item.writePaths] : undefined,
+  };
+}
+
+function cloneExecutionEvent(event: ExecutionEvent): ExecutionEvent {
+  return {
+    workItemId: event.workItemId,
+    kind: event.kind,
+    ...(event.stdout !== undefined ? { stdout: event.stdout } : {}),
+    ...(event.stderr !== undefined ? { stderr: event.stderr } : {}),
+    ...(event.exitCode !== undefined ? { exitCode: event.exitCode } : {}),
+    ...(event.message !== undefined ? { message: event.message } : {}),
+  };
+}
+
+function cloneQueueSignal(signal: QueueSignal): QueueSignal {
+  return {
+    kind: signal.kind,
+    severity: signal.severity,
+    message: signal.message,
+    ...(signal.workItemId ? { workItemId: signal.workItemId } : {}),
+    ...(signal.targetItemId ? { targetItemId: signal.targetItemId } : {}),
+    ...(signal.evidence !== undefined ? { evidence: signal.evidence } : {}),
   };
 }

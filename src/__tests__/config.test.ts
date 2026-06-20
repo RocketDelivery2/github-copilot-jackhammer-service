@@ -22,6 +22,8 @@ describe('config', () => {
       });
 
       assert.equal(parsed.ADAPTIVE_QUEUE_ENABLED, false);
+      assert.equal(parsed.ADAPTIVE_EVENT_JOURNAL_PATH, '.ai/adaptive-preview-event-journal.json');
+      assert.equal(parsed.ADAPTIVE_EVENT_JOURNAL_RETENTION, 200);
       assert.equal(enabled.ADAPTIVE_QUEUE_ENABLED, true);
     } finally {
       restoreEnv('OPENAI_API_KEY', previousOpenAiKey);

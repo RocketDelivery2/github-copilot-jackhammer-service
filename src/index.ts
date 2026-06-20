@@ -17,7 +17,10 @@ import { loadState, saveState } from './state.js';
 import { extractCopilotGuidance, rebalanceQueue, detectCopilotQuestion } from './brain.js';
 import type { ActiveWorkItem, CommandQueueItem, CopilotResult, QueueState } from './types.js';
 import { applyIndustryStandardsPriority } from './standards.js';
-import { createAdaptiveQueuePreview } from './orchestration/adapter.js';
+import {
+  captureAdaptivePreviewJournal,
+  createAdaptiveQueuePreview,
+} from './orchestration/adapter.js';
 
 const argv = yargs(hideBin(process.argv))
   .option('once', { type: 'boolean', default: false })
@@ -238,6 +241,14 @@ async function runOnce(): Promise<void> {
       guidance: state.extractedCopilotGuidance ?? null,
       recentResults: state.recentCopilotResults,
     }, { enabled: true });
+    const journalRecords = await captureAdaptivePreviewJournal(adaptivePreview, {
+      enabled: true,
+      journalPath: path.resolve(process.cwd(), config.ADAPTIVE_EVENT_JOURNAL_PATH),
+      retentionLimit: config.ADAPTIVE_EVENT_JOURNAL_RETENTION,
+    });
+    if (journalRecords.length > 0) {
+      console.log(`Adaptive queue preview appended ${journalRecords.length} journal record(s).`);
+    }
     console.log(`Adaptive queue preview planned ${adaptivePreview.scheduledWorkItemIds.length} item(s); existing scheduling flow remains active.`);
   }
 
