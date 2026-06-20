@@ -1,6 +1,10 @@
 # Adaptive Execution Queue
 
-The Adaptive Execution Queue is a future orchestration layer for turning plans, agent output, validation results, and human decisions into a deterministic work queue. This first slice is intentionally not wired into `src/index.ts`; it provides pure data types and scheduling helpers that can be tested without changing current runtime behavior.
+The Adaptive Execution Queue is a future orchestration layer for turning plans, agent output, validation results, and human decisions into a deterministic work queue. It is guarded by `ADAPTIVE_QUEUE_ENABLED=false` by default. When disabled, `src/index.ts` continues using the existing scheduling flow. When enabled, the service can build a preview from current runtime state without replacing current behavior.
+
+## Runtime Adapter
+
+`src/orchestration/adapter.ts` maps existing `ActiveWorkItem`, `CommandQueueItem`, `CopilotGuidance`, and recent Copilot result inputs into `WorkItem` and `QueueSignal` records. The adapter is deterministic and side-effect free. The current runtime branch only produces an adaptive preview when `ADAPTIVE_QUEUE_ENABLED=true`; legacy scheduling remains active.
 
 ## Feedback-Driven Queue
 
