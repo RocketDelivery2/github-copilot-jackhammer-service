@@ -1,5 +1,6 @@
 import path from 'node:path';
 import process from 'node:process';
+import { readFile } from 'node:fs/promises';
 import yargs from 'yargs/yargs';
 import { hideBin } from 'yargs/helpers';
 import { config } from './config.js';
@@ -22,8 +23,10 @@ import {
   captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
   createAdaptiveQueuePreview,
+  selectAdaptivePreviewSkills,
 } from './orchestration/adapter.js';
-import type { AdaptivePreviewValidationProbe } from './orchestration/adapter.js';
+import type { AdaptivePreviewSkillTask, AdaptivePreviewValidationProbe } from './orchestration/adapter.js';
+import { createSkillMetadataIndex } from './skills/registry.js';
 
 const argv = yargs(hideBin(process.argv))
   .option('once', { type: 'boolean', default: false })
@@ -276,6 +279,73 @@ function parseValidationProbe(value: unknown, index: number): AdaptivePreviewVal
   };
 }
 
+async function loadAdaptivePreviewSkillMetadataIndex() {
+  const skillRelativePaths = [
+    'skills/repo-inspection/skill.md',
+    'skills/typescript-patch/skill.md',
+    'skills/validation/skill.md',
+    'skills/error-recovery/skill.md',
+  ] as const;
+
+  const sources = await Promise.all(skillRelativePaths.map(async relativePath => {
+    const absolutePath = path.resolve(process.cwd(), relativePath);
+    const markdown = await readFile(absolutePath, 'utf8');
+    return {
+      skillPath: relativePath,
+      markdown,
+    };
+  }));
+
+  return createSkillMetadataIndex(sources);
+}
+
+function buildAdaptivePreviewSkillTasks(
+  state: QueueState,
+  queueSignals: readonly { kind: string; message: string; workItemId?: string }[],
+): AdaptivePreviewSkillTask[] {
+  const tasks: AdaptivePreviewSkillTask[] = [];
+
+  if (state.activeWorkItem) {
+    tasks.push({
+      id: `active:${state.activeWorkItem.issueNumber}`,
+      title: state.activeWorkItem.title,
+      description: state.activeWorkItem.issueUrl,
+    });
+  }
+
+  for (const queueItem of state.commandQueue.slice(0, 3)) {
+    const id = queueItem.issueNumber ? `issue:${queueItem.issueNumber}` : `queue:${queueItem.hash}`;
+    tasks.push({
+      id,
+      title: queueItem.title,
+      description: queueItem.prompt,
+    });
+  }
+
+  for (const signal of queueSignals.slice(0, 4)) {
+    tasks.push({
+      id: signal.workItemId ? `signal:${signal.workItemId}:${signal.kind}` : `signal:${signal.kind}`,
+      title: signal.kind,
+      description: signal.message,
+    });
+  }
+
+  return dedupeSkillTasks(tasks);
+}
+
+function dedupeSkillTasks(tasks: readonly AdaptivePreviewSkillTask[]): AdaptivePreviewSkillTask[] {
+  const seen = new Set<string>();
+  const deduped: AdaptivePreviewSkillTask[] = [];
+  for (const task of tasks) {
+    if (seen.has(task.id)) {
+      continue;
+    }
+    seen.add(task.id);
+    deduped.push(task);
+  }
+  return deduped;
+}
+
 // â”€â”€â”€ Main run loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function runOnce(): Promise<void> {
@@ -291,6 +361,7 @@ async function runOnce(): Promise<void> {
   }
 
   if (config.ADAPTIVE_QUEUE_ENABLED) {
+    const skillMetadataIndex = await loadAdaptivePreviewSkillMetadataIndex();
     const previewRequests = buildAdaptivePreviewCommandCaptureRequests({
       enabled: true,
       source: config.ADAPTIVE_PREVIEW_CAPTURE_SOURCE,
@@ -307,6 +378,14 @@ async function runOnce(): Promise<void> {
       requests: previewRequests,
       captureLimit: config.ADAPTIVE_PREVIEW_CAPTURE_LIMIT,
     });
+    const previewSkillTasks = buildAdaptivePreviewSkillTasks(state, previewCapture.queueSignals);
+    const skillSelections = selectAdaptivePreviewSkills({
+      enabled: true,
+      skillIndex: skillMetadataIndex,
+      tasks: previewSkillTasks,
+      maxSelections: 8,
+      maxMatchesPerTask: 1,
+    });
     const adaptivePreview = createAdaptiveQueuePreview({
       activeWorkItem: state.activeWorkItem,
       commandQueue: state.commandQueue,
@@ -314,6 +393,7 @@ async function runOnce(): Promise<void> {
       recentResults: state.recentCopilotResults,
       executionEvents: previewCapture.executionEvents,
       queueSignals: previewCapture.queueSignals,
+      skillSelections,
     }, { enabled: true });
     const journalRecords = await captureAdaptivePreviewJournal(adaptivePreview, {
       enabled: true,
@@ -325,6 +405,9 @@ async function runOnce(): Promise<void> {
     }
     if (journalRecords.length > 0) {
       console.log(`Adaptive queue preview appended ${journalRecords.length} journal record(s).`);
+    }
+    if (skillSelections.length > 0) {
+      console.log(`Adaptive queue preview selected ${skillSelections.length} skill metadata record(s).`);
     }
     console.log(`Adaptive queue preview planned ${adaptivePreview.scheduledWorkItemIds.length} item(s); existing scheduling flow remains active.`);
   }
@@ -454,5 +537,4 @@ main().catch(err => {
   console.error(err);
   process.exit(1);
 });
-
 

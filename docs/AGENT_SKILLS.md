@@ -84,6 +84,8 @@ This is **model-only**:
 - no new runtime dependencies
 - no secrets/auth/deployment changes
 
+> Update (preview-only): adaptive preview journaling now records **skill-selection metadata** (skill name, rank/score, reasons, risk, allowed tools, trust-policy summary) when `ADAPTIVE_QUEUE_ENABLED=true`. This remains preview metadata only: no skill scripts are loaded or executed.
+
 ## Future Wiring (Recommended)
 
 Next PRs can wire this into preview-only flows:

@@ -11,11 +11,15 @@ import {
   appendEventJournalRecords,
   createExecutionEventJournalRecord,
   createQueueSignalJournalRecord,
+  createSkillSelectionJournalRecord,
 } from './event-journal.js';
 import type { ActiveWorkItem, CommandQueueItem, CopilotGuidance, CopilotResult } from '../types.js';
 import type { CommandExecutionRequest, CommandExecutionResult } from './command-runner.js';
 import type { EventJournalRecord } from './event-journal.js';
 import type { ExecutionEvent, QueueSignal, WorkItem } from './types.js';
+import { selectSkillsForTask } from '../skills/selector.js';
+import { evaluateSkillResourcePolicy } from '../skills/trust-policy.js';
+import type { SkillMetadataIndex, SkillTaskLike } from '../skills/types.js';
 
 export type AdaptiveQueueRuntimeInputs = {
   activeWorkItem?: ActiveWorkItem;
@@ -24,6 +28,7 @@ export type AdaptiveQueueRuntimeInputs = {
   recentResults?: readonly CopilotResult[];
   executionEvents?: readonly ExecutionEvent[];
   queueSignals?: readonly QueueSignal[];
+  skillSelections?: readonly AdaptivePreviewSkillSelection[];
 };
 
 export type AdaptiveScheduler = (
@@ -43,6 +48,7 @@ export type AdaptiveQueuePreview = {
   workItems: WorkItem[];
   executionEvents: ExecutionEvent[];
   signals: QueueSignal[];
+  skillSelections: AdaptivePreviewSkillSelection[];
   scheduledWorkItemIds: string[];
 };
 
@@ -94,6 +100,35 @@ export type AdaptivePreviewCommandCapture = {
   queueSignals: QueueSignal[];
 };
 
+export type AdaptivePreviewSkillTask = SkillTaskLike & {
+  id: string;
+};
+
+export type AdaptivePreviewSkillSelection = {
+  taskId: string;
+  skillName: string;
+  rank: number;
+  score: number;
+  reasons: string[];
+  risk: 'low' | 'medium' | 'high';
+  allowedTools: string[];
+  trustPolicySummary: {
+    instructionsReadAllowed: boolean;
+    referencesReadAllowed: boolean;
+    assetsReadAllowed: boolean;
+    scriptsRequireHumanApproval: boolean;
+    scriptsAutoExecutable: boolean;
+  };
+};
+
+export type AdaptivePreviewSkillSelectionOptions = {
+  enabled: boolean;
+  skillIndex: SkillMetadataIndex;
+  tasks: readonly AdaptivePreviewSkillTask[];
+  maxSelections?: number;
+  maxMatchesPerTask?: number;
+};
+
 export function createAdaptiveQueuePreview(
   inputs: AdaptiveQueueRuntimeInputs,
   options: AdaptiveQueuePreviewOptions,
@@ -105,6 +140,7 @@ export function createAdaptiveQueuePreview(
       workItems: [],
       executionEvents: [],
       signals: [],
+      skillSelections: [],
       scheduledWorkItemIds: [],
     };
   }
@@ -112,6 +148,7 @@ export function createAdaptiveQueuePreview(
   const workItems = mapRuntimeInputsToWorkItems(inputs);
   const executionEvents = mapRuntimeInputsToExecutionEvents(inputs);
   const signals = mapRuntimeInputsToQueueSignals(inputs);
+  const skillSelections = mapRuntimeInputsToSkillSelections(inputs);
   const scheduler = options.scheduler ?? defaultAdaptiveScheduler;
   const scheduledItems = scheduler(workItems, signals).map(cloneWorkItem);
   const maxParallel = Math.max(1, Math.floor(options.maxParallel ?? 1));
@@ -123,6 +160,7 @@ export function createAdaptiveQueuePreview(
     workItems,
     executionEvents,
     signals,
+    skillSelections,
     scheduledWorkItemIds: batch.map(item => item.id),
   };
 }
@@ -151,6 +189,28 @@ export async function captureAdaptivePreviewJournal(
         source,
         workItemId: signal.workItemId,
         signal,
+      })),
+    ...preview.skillSelections.map(selection =>
+      createSkillSelectionJournalRecord({
+        createdAt,
+        source,
+        workItemId: selection.taskId,
+        selection: {
+          taskId: selection.taskId,
+          skillName: selection.skillName,
+          rank: selection.rank,
+          score: selection.score,
+          reasons: [...selection.reasons],
+          risk: selection.risk,
+          allowedTools: [...selection.allowedTools],
+          trustPolicySummary: {
+            instructionsReadAllowed: selection.trustPolicySummary.instructionsReadAllowed,
+            referencesReadAllowed: selection.trustPolicySummary.referencesReadAllowed,
+            assetsReadAllowed: selection.trustPolicySummary.assetsReadAllowed,
+            scriptsRequireHumanApproval: selection.trustPolicySummary.scriptsRequireHumanApproval,
+            scriptsAutoExecutable: selection.trustPolicySummary.scriptsAutoExecutable,
+          },
+        },
       })),
   ];
 
@@ -241,6 +301,64 @@ export async function captureAdaptivePreviewCommandRunnerFeedback(
   };
 }
 
+export function selectAdaptivePreviewSkills(
+  options: AdaptivePreviewSkillSelectionOptions,
+): AdaptivePreviewSkillSelection[] {
+  if (!options.enabled) {
+    return [];
+  }
+
+  const maxSelections = Math.max(0, Math.floor(options.maxSelections ?? 16));
+  const maxMatchesPerTask = Math.max(1, Math.floor(options.maxMatchesPerTask ?? 1));
+  if (maxSelections === 0) {
+    return [];
+  }
+
+  const selected: AdaptivePreviewSkillSelection[] = [];
+  for (const task of options.tasks) {
+    const matches = selectSkillsForTask(options.skillIndex, task, { limit: maxMatchesPerTask });
+    for (const match of matches) {
+      const basePath = normalizeSkillBasePath(match.skill.skillPath, match.skill.name);
+      const instructionsPolicy = evaluateSkillResourcePolicy(`${basePath}/skill.md`);
+      const referencesPolicy = evaluateSkillResourcePolicy(`${basePath}/references/reference.md`);
+      const assetsPolicy = evaluateSkillResourcePolicy(`${basePath}/assets/asset.txt`);
+      const scriptsPolicy = evaluateSkillResourcePolicy(`${basePath}/scripts/example.ps1`);
+
+      selected.push({
+        taskId: task.id,
+        skillName: match.skill.name,
+        rank: 0,
+        score: match.score,
+        reasons: [...match.reasons],
+        risk: match.skill.risk,
+        allowedTools: [...match.skill.allowedTools],
+        trustPolicySummary: {
+          instructionsReadAllowed: instructionsPolicy.readAllowed,
+          referencesReadAllowed: referencesPolicy.readAllowed,
+          assetsReadAllowed: assetsPolicy.readAllowed,
+          scriptsRequireHumanApproval: scriptsPolicy.requiresHumanApproval,
+          scriptsAutoExecutable: scriptsPolicy.autoExecutable,
+        },
+      });
+    }
+  }
+
+  selected.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    if (left.taskId !== right.taskId) {
+      return left.taskId.localeCompare(right.taskId);
+    }
+    return left.skillName.localeCompare(right.skillName);
+  });
+
+  return selected.slice(0, maxSelections).map((selection, index) => ({
+    ...selection,
+    rank: index + 1,
+  }));
+}
+
 export function mapRuntimeInputsToWorkItems(inputs: AdaptiveQueueRuntimeInputs): WorkItem[] {
   const workItems: WorkItem[] = [];
 
@@ -301,6 +419,10 @@ export function mapRuntimeInputsToQueueSignals(inputs: AdaptiveQueueRuntimeInput
 
 export function mapRuntimeInputsToExecutionEvents(inputs: AdaptiveQueueRuntimeInputs): ExecutionEvent[] {
   return (inputs.executionEvents ?? []).map(cloneExecutionEvent);
+}
+
+export function mapRuntimeInputsToSkillSelections(inputs: AdaptiveQueueRuntimeInputs): AdaptivePreviewSkillSelection[] {
+  return (inputs.skillSelections ?? []).map(cloneSkillSelection);
 }
 
 function defaultAdaptiveScheduler(
@@ -510,4 +632,36 @@ function cloneCommandExecutionResult(result: CommandExecutionResult): CommandExe
     timeoutMs: result.timeoutMs,
     workItemId: result.workItemId,
   };
+}
+
+function cloneSkillSelection(selection: AdaptivePreviewSkillSelection): AdaptivePreviewSkillSelection {
+  return {
+    taskId: selection.taskId,
+    skillName: selection.skillName,
+    rank: selection.rank,
+    score: selection.score,
+    reasons: [...selection.reasons],
+    risk: selection.risk,
+    allowedTools: [...selection.allowedTools],
+    trustPolicySummary: {
+      instructionsReadAllowed: selection.trustPolicySummary.instructionsReadAllowed,
+      referencesReadAllowed: selection.trustPolicySummary.referencesReadAllowed,
+      assetsReadAllowed: selection.trustPolicySummary.assetsReadAllowed,
+      scriptsRequireHumanApproval: selection.trustPolicySummary.scriptsRequireHumanApproval,
+      scriptsAutoExecutable: selection.trustPolicySummary.scriptsAutoExecutable,
+    },
+  };
+}
+
+function normalizeSkillBasePath(skillPath: string | undefined, skillName: string): string {
+  if (!skillPath || skillPath.trim().length === 0) {
+    return `skills/${skillName}`;
+  }
+
+  const normalized = skillPath.replace(/\\/g, '/');
+  const suffix = '/skill.md';
+  if (normalized.toLowerCase().endsWith(suffix)) {
+    return normalized.slice(0, -suffix.length);
+  }
+  return normalized;
 }
