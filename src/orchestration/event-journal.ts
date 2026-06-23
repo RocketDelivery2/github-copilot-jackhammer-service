@@ -8,7 +8,7 @@ import type {
   QueueSignalSeverity,
 } from './types.js';
 
-export type EventJournalRecordType = 'execution_event' | 'queue_signal';
+export type EventJournalRecordType = 'execution_event' | 'queue_signal' | 'skill_selection';
 
 export type EventJournalExecutionEventRecord = {
   type: 'execution_event';
@@ -26,9 +26,35 @@ export type EventJournalQueueSignalRecord = {
   signal: QueueSignal;
 };
 
+export type SkillSelectionRisk = 'low' | 'medium' | 'high';
+
+export type EventJournalSkillSelectionRecord = {
+  type: 'skill_selection';
+  createdAt: string;
+  source: string;
+  workItemId?: string;
+  selection: {
+    taskId: string;
+    skillName: string;
+    rank: number;
+    score: number;
+    reasons: string[];
+    risk: SkillSelectionRisk;
+    allowedTools: string[];
+    trustPolicySummary: {
+      instructionsReadAllowed: boolean;
+      referencesReadAllowed: boolean;
+      assetsReadAllowed: boolean;
+      scriptsRequireHumanApproval: boolean;
+      scriptsAutoExecutable: boolean;
+    };
+  };
+};
+
 export type EventJournalRecord =
   | EventJournalExecutionEventRecord
-  | EventJournalQueueSignalRecord;
+  | EventJournalQueueSignalRecord
+  | EventJournalSkillSelectionRecord;
 
 export type CreateExecutionEventJournalRecordInput = {
   createdAt: string;
@@ -42,6 +68,28 @@ export type CreateQueueSignalJournalRecordInput = {
   source: string;
   workItemId?: string;
   signal: QueueSignal;
+};
+
+export type CreateSkillSelectionJournalRecordInput = {
+  createdAt: string;
+  source: string;
+  workItemId?: string;
+  selection: {
+    taskId: string;
+    skillName: string;
+    rank: number;
+    score: number;
+    reasons: readonly string[];
+    risk: SkillSelectionRisk;
+    allowedTools: readonly string[];
+    trustPolicySummary: {
+      instructionsReadAllowed: boolean;
+      referencesReadAllowed: boolean;
+      assetsReadAllowed: boolean;
+      scriptsRequireHumanApproval: boolean;
+      scriptsAutoExecutable: boolean;
+    };
+  };
 };
 
 export type AppendEventJournalOptions = {
@@ -74,6 +122,8 @@ const QUEUE_SIGNAL_SEVERITIES = new Set<QueueSignalSeverity>([
   'warning',
   'error',
 ]);
+
+const SKILL_SELECTION_RISKS = new Set<SkillSelectionRisk>(['low', 'medium', 'high']);
 
 export async function loadEventJournal(filePath: string): Promise<EventJournalRecord[]> {
   let contents: string;
@@ -148,6 +198,36 @@ export function createQueueSignalJournalRecord(
   return parseJournalRecord(record, 'event journal input', 0) as EventJournalQueueSignalRecord;
 }
 
+export function createSkillSelectionJournalRecord(
+  input: CreateSkillSelectionJournalRecordInput,
+): EventJournalSkillSelectionRecord {
+  const workItemId = input.workItemId ?? input.selection.taskId;
+  const record: EventJournalSkillSelectionRecord = {
+    type: 'skill_selection',
+    createdAt: input.createdAt,
+    source: input.source,
+    ...(workItemId ? { workItemId } : {}),
+    selection: {
+      taskId: input.selection.taskId,
+      skillName: input.selection.skillName,
+      rank: input.selection.rank,
+      score: input.selection.score,
+      reasons: [...input.selection.reasons],
+      risk: input.selection.risk,
+      allowedTools: [...input.selection.allowedTools],
+      trustPolicySummary: {
+        instructionsReadAllowed: input.selection.trustPolicySummary.instructionsReadAllowed,
+        referencesReadAllowed: input.selection.trustPolicySummary.referencesReadAllowed,
+        assetsReadAllowed: input.selection.trustPolicySummary.assetsReadAllowed,
+        scriptsRequireHumanApproval: input.selection.trustPolicySummary.scriptsRequireHumanApproval,
+        scriptsAutoExecutable: input.selection.trustPolicySummary.scriptsAutoExecutable,
+      },
+    },
+  };
+
+  return parseJournalRecord(record, 'event journal input', 0) as EventJournalSkillSelectionRecord;
+}
+
 export function applyEventJournalRetention(
   records: readonly EventJournalRecord[],
   retentionLimit?: number,
@@ -202,7 +282,17 @@ function parseJournalRecord(
     };
   }
 
-  throw malformedJournalError(filePath, `${context}.type must be execution_event or queue_signal`);
+  if (type === 'skill_selection') {
+    return {
+      type,
+      createdAt,
+      source,
+      ...(workItemId ? { workItemId } : {}),
+      selection: parseSkillSelection(value.selection, filePath, `${context}.selection`),
+    };
+  }
+
+  throw malformedJournalError(filePath, `${context}.type must be execution_event, queue_signal, or skill_selection`);
 }
 
 function parseExecutionEvent(value: unknown, filePath: string, context: string): ExecutionEvent {
@@ -261,6 +351,70 @@ function parseQueueSignal(value: unknown, filePath: string, context: string): Qu
   };
 }
 
+function parseSkillSelection(
+  value: unknown,
+  filePath: string,
+  context: string,
+): EventJournalSkillSelectionRecord['selection'] {
+  if (!isRecord(value)) {
+    throw malformedJournalError(filePath, `${context} must be an object`);
+  }
+
+  const taskId = requireNonEmptyString(value.taskId, filePath, `${context}.taskId`);
+  const skillName = requireNonEmptyString(value.skillName, filePath, `${context}.skillName`);
+  const rank = requireNonNegativeInteger(value.rank, filePath, `${context}.rank`);
+  const score = requireFiniteNumber(value.score, filePath, `${context}.score`);
+  const risk = requireString(value.risk, filePath, `${context}.risk`);
+  if (!SKILL_SELECTION_RISKS.has(risk as SkillSelectionRisk)) {
+    throw malformedJournalError(filePath, `${context}.risk is not a known skill selection risk`);
+  }
+
+  const reasons = requireStringArray(value.reasons, filePath, `${context}.reasons`);
+  const allowedTools = requireStringArray(value.allowedTools, filePath, `${context}.allowedTools`);
+
+  if (!isRecord(value.trustPolicySummary)) {
+    throw malformedJournalError(filePath, `${context}.trustPolicySummary must be an object`);
+  }
+  const trustPolicySummary = value.trustPolicySummary;
+
+  return {
+    taskId,
+    skillName,
+    rank,
+    score,
+    reasons,
+    risk: risk as SkillSelectionRisk,
+    allowedTools,
+    trustPolicySummary: {
+      instructionsReadAllowed: requireBoolean(
+        trustPolicySummary.instructionsReadAllowed,
+        filePath,
+        `${context}.trustPolicySummary.instructionsReadAllowed`,
+      ),
+      referencesReadAllowed: requireBoolean(
+        trustPolicySummary.referencesReadAllowed,
+        filePath,
+        `${context}.trustPolicySummary.referencesReadAllowed`,
+      ),
+      assetsReadAllowed: requireBoolean(
+        trustPolicySummary.assetsReadAllowed,
+        filePath,
+        `${context}.trustPolicySummary.assetsReadAllowed`,
+      ),
+      scriptsRequireHumanApproval: requireBoolean(
+        trustPolicySummary.scriptsRequireHumanApproval,
+        filePath,
+        `${context}.trustPolicySummary.scriptsRequireHumanApproval`,
+      ),
+      scriptsAutoExecutable: requireBoolean(
+        trustPolicySummary.scriptsAutoExecutable,
+        filePath,
+        `${context}.trustPolicySummary.scriptsAutoExecutable`,
+      ),
+    },
+  };
+}
+
 function cloneJournalRecord(record: EventJournalRecord): EventJournalRecord {
   if (record.type === 'execution_event') {
     return {
@@ -269,6 +423,31 @@ function cloneJournalRecord(record: EventJournalRecord): EventJournalRecord {
       source: record.source,
       ...(record.workItemId ? { workItemId: record.workItemId } : {}),
       event: cloneExecutionEvent(record.event),
+    };
+  }
+
+  if (record.type === 'skill_selection') {
+    return {
+      type: record.type,
+      createdAt: record.createdAt,
+      source: record.source,
+      ...(record.workItemId ? { workItemId: record.workItemId } : {}),
+      selection: {
+        taskId: record.selection.taskId,
+        skillName: record.selection.skillName,
+        rank: record.selection.rank,
+        score: record.selection.score,
+        reasons: [...record.selection.reasons],
+        risk: record.selection.risk,
+        allowedTools: [...record.selection.allowedTools],
+        trustPolicySummary: {
+          instructionsReadAllowed: record.selection.trustPolicySummary.instructionsReadAllowed,
+          referencesReadAllowed: record.selection.trustPolicySummary.referencesReadAllowed,
+          assetsReadAllowed: record.selection.trustPolicySummary.assetsReadAllowed,
+          scriptsRequireHumanApproval: record.selection.trustPolicySummary.scriptsRequireHumanApproval,
+          scriptsAutoExecutable: record.selection.trustPolicySummary.scriptsAutoExecutable,
+        },
+      },
     };
   }
 
@@ -360,6 +539,36 @@ function optionalNumber(value: unknown, filePath: string, context: string): numb
     throw malformedJournalError(filePath, `${context} must be a finite number`);
   }
   return value;
+}
+
+function requireFiniteNumber(value: unknown, filePath: string, context: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw malformedJournalError(filePath, `${context} must be a finite number`);
+  }
+  return value;
+}
+
+function requireNonNegativeInteger(value: unknown, filePath: string, context: string): number {
+  const number = requireFiniteNumber(value, filePath, context);
+  if (!Number.isInteger(number) || number < 0) {
+    throw malformedJournalError(filePath, `${context} must be a non-negative integer`);
+  }
+  return number;
+}
+
+function requireBoolean(value: unknown, filePath: string, context: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw malformedJournalError(filePath, `${context} must be a boolean`);
+  }
+  return value;
+}
+
+function requireStringArray(value: unknown, filePath: string, context: string): string[] {
+  if (!Array.isArray(value)) {
+    throw malformedJournalError(filePath, `${context} must be an array`);
+  }
+
+  return value.map((entry, index) => requireString(entry, filePath, `${context}[${index}]`));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

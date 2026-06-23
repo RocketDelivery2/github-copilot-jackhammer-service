@@ -9,9 +9,11 @@ import {
   captureAdaptivePreviewJournal,
   createAdaptiveQueuePreview,
   mapRuntimeInputsToQueueSignals,
+  selectAdaptivePreviewSkills,
   mapRuntimeInputsToWorkItems,
 } from './adapter.js';
 import type {
+  AdaptivePreviewSkillTask,
   AdaptivePreviewValidationProbe,
   AdaptiveQueueRuntimeInputs,
 } from './adapter.js';
@@ -22,6 +24,7 @@ import {
 } from './command-runner.js';
 import type { CommandExecutionResult } from './command-runner.js';
 import type { EventJournalRecord } from './event-journal.js';
+import { createSkillMetadataIndex } from '../skills/registry.js';
 
 const runtimeInputs: AdaptiveQueueRuntimeInputs = {
   activeWorkItem: {
@@ -220,6 +223,202 @@ describe('adaptive queue adapter', () => {
 
     assert.deepEqual(executed, ['w1', 'w2']);
     assert.equal(capture.commandResults.length, 2);
+  });
+
+  it('does not select preview skills while adaptive preview is disabled', () => {
+    const skillIndex = createSkillMetadataIndex([
+      {
+        skillPath: 'skills/validation/skill.md',
+        markdown: `---
+name: validation
+description: Validate code changes with test build lint workflow.
+version: 1.0.0
+risk: low
+allowedTools: [npm.cmd]
+resourceHints: [package.json]
+keywords: [validation, test, build, lint]
+---
+`,
+      },
+    ]);
+
+    const selected = selectAdaptivePreviewSkills({
+      enabled: false,
+      skillIndex,
+      tasks: [{ id: 't1', title: 'run test build lint' }],
+    });
+
+    assert.deepEqual(selected, []);
+  });
+
+  it('selects preview skills deterministically for representative tasks', () => {
+    const skillIndex = createSkillMetadataIndex([
+      {
+        skillPath: 'skills/repo-inspection/skill.md',
+        markdown: `---
+name: repo-inspection
+description: Inspect repository state safely with bounded targeted reads.
+version: 1.0.0
+risk: low
+allowedTools: [git, rg, glob, view]
+resourceHints: [src/]
+keywords: [inspect, repository, diff]
+---
+`,
+      },
+      {
+        skillPath: 'skills/typescript-patch/skill.md',
+        markdown: `---
+name: typescript-patch
+description: Apply a small reviewable TypeScript change with bounded inspection.
+version: 1.0.0
+risk: medium
+allowedTools: [apply_patch, npm.cmd]
+resourceHints: [src/**/*.ts]
+keywords: [typescript, patch]
+---
+`,
+      },
+      {
+        skillPath: 'skills/validation/skill.md',
+        markdown: `---
+name: validation
+description: Validate code changes with test build lint and summarize outcomes.
+version: 1.0.0
+risk: low
+allowedTools: [npm.cmd]
+resourceHints: [package.json]
+keywords: [validation, test, build, lint]
+---
+`,
+      },
+      {
+        skillPath: 'skills/error-recovery/skill.md',
+        markdown: `---
+name: error-recovery
+description: Recover from command failures by classifying errors and emitting one repair command.
+version: 1.0.0
+risk: medium
+allowedTools: [powershell]
+resourceHints: [logs]
+keywords: [error, failure, repair]
+---
+`,
+      },
+    ]);
+
+    const tasks: AdaptivePreviewSkillTask[] = [
+      { id: 'validate:build', title: 'run validation test build lint' },
+      { id: 'inspect:repo', title: 'inspect repository diff' },
+      { id: 'patch:ts', title: 'apply typescript patch to adapter' },
+      { id: 'failure:cmd', title: 'command failure requires repair' },
+    ];
+
+    const selected = selectAdaptivePreviewSkills({
+      enabled: true,
+      skillIndex,
+      tasks,
+      maxSelections: 10,
+      maxMatchesPerTask: 1,
+    });
+
+    assert.ok(selected.some(entry => entry.taskId === 'validate:build' && entry.skillName === 'validation'));
+    assert.ok(selected.some(entry => entry.taskId === 'inspect:repo' && entry.skillName === 'repo-inspection'));
+    assert.ok(selected.some(entry => entry.taskId === 'patch:ts' && entry.skillName === 'typescript-patch'));
+    assert.ok(selected.some(entry => entry.taskId === 'failure:cmd' && entry.skillName === 'error-recovery'));
+
+    const rankings = selected.map(entry => entry.rank);
+    assert.deepEqual(rankings, rankings.slice().sort((left, right) => left - right));
+  });
+
+  it('produces deterministic skill-selection journal payload ordering', () => {
+    const skillIndex = createSkillMetadataIndex([
+      {
+        skillPath: 'skills/validation/skill.md',
+        markdown: `---
+name: validation
+description: Validate code changes with test build lint and summarize outcomes.
+version: 1.0.0
+risk: low
+allowedTools: [npm.cmd]
+resourceHints: [package.json]
+keywords: [validation, test, build, lint]
+---
+`,
+      },
+    ]);
+
+    const tasks: AdaptivePreviewSkillTask[] = [
+      { id: 'a', title: 'run validation test build lint' },
+      { id: 'b', title: 'validation build test lint checks' },
+    ];
+
+    const first = selectAdaptivePreviewSkills({
+      enabled: true,
+      skillIndex,
+      tasks,
+      maxSelections: 4,
+      maxMatchesPerTask: 1,
+    });
+    const second = selectAdaptivePreviewSkills({
+      enabled: true,
+      skillIndex,
+      tasks,
+      maxSelections: 4,
+      maxMatchesPerTask: 1,
+    });
+
+    assert.deepEqual(first, second);
+  });
+
+  it('captures preview skill-selection journal records deterministically', async () => {
+    const skillIndex = createSkillMetadataIndex([
+      {
+        skillPath: 'skills/error-recovery/skill.md',
+        markdown: `---
+name: error-recovery
+description: Recover from command failures by classifying errors and emitting one repair command.
+version: 1.0.0
+risk: medium
+allowedTools: [powershell]
+resourceHints: [logs]
+keywords: [error, failure, repair]
+---
+`,
+      },
+    ]);
+    const skillSelections = selectAdaptivePreviewSkills({
+      enabled: true,
+      skillIndex,
+      tasks: [{ id: 'signal:test_failure', title: 'command failure requires repair' }],
+      maxSelections: 1,
+      maxMatchesPerTask: 1,
+    });
+    const preview = createAdaptiveQueuePreview({
+      ...runtimeInputs,
+      skillSelections,
+    }, { enabled: true });
+    const appended: EventJournalRecord[] = [];
+
+    await captureAdaptivePreviewJournal(preview, {
+      enabled: true,
+      journalPath: 'ignored.json',
+      appendRecords: async (_filePath, records) => {
+        appended.push(...records);
+        return [...records];
+      },
+      now: () => '2026-06-20T12:15:00.000Z',
+      source: 'adapter-test',
+    });
+
+    const skillRecord = appended.find(record => record.type === 'skill_selection');
+    assert.ok(skillRecord && skillRecord.type === 'skill_selection');
+    if (!skillRecord || skillRecord.type !== 'skill_selection') {
+      throw new Error('Expected a skill_selection record to be appended.');
+    }
+    assert.equal(skillRecord.selection.skillName, 'error-recovery');
+    assert.equal(skillRecord.selection.trustPolicySummary.scriptsRequireHumanApproval, true);
+    assert.equal(skillRecord.selection.trustPolicySummary.scriptsAutoExecutable, false);
   });
 
   it('writes preview execution events to the journal when adaptive preview is enabled', async () => {

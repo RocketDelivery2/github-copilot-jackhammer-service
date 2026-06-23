@@ -9,6 +9,7 @@ import {
   applyEventJournalRetention,
   createExecutionEventJournalRecord,
   createQueueSignalJournalRecord,
+  createSkillSelectionJournalRecord,
   loadEventJournal,
 } from './event-journal.js';
 
@@ -53,6 +54,36 @@ describe('event journal', () => {
 
     assert.deepEqual(saved, [executionEvent, queueSignal]);
     assert.deepEqual(loaded, [executionEvent, queueSignal]);
+  });
+
+  it('appends preview skill selection records', async () => {
+    const journalPath = await createJournalPath('skill-selection');
+    const skillSelection = createSkillSelectionJournalRecord({
+      createdAt: firstCreatedAt,
+      source: 'adaptive-preview',
+      selection: {
+        taskId: 'issue:42',
+        skillName: 'validation',
+        rank: 1,
+        score: 12,
+        reasons: ['keyword:validation', 'description:test'],
+        risk: 'low',
+        allowedTools: ['npm.cmd', 'git'],
+        trustPolicySummary: {
+          instructionsReadAllowed: true,
+          referencesReadAllowed: true,
+          assetsReadAllowed: true,
+          scriptsRequireHumanApproval: true,
+          scriptsAutoExecutable: false,
+        },
+      },
+    });
+
+    const saved = await appendEventJournalRecords(journalPath, [skillSelection]);
+    const loaded = await loadEventJournal(journalPath);
+
+    assert.deepEqual(saved, [skillSelection]);
+    assert.deepEqual(loaded, [skillSelection]);
   });
 
   it('preserves existing journal entries when appending', async () => {
