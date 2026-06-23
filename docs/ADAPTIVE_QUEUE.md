@@ -1,4 +1,4 @@
-# Adaptive Execution Queue
+﻿# Adaptive Execution Queue
 
 The Adaptive Execution Queue is a future orchestration layer for turning plans, agent output, validation results, and human decisions into a deterministic work queue. It is guarded by `ADAPTIVE_QUEUE_ENABLED=false` by default. When disabled, `src/index.ts` continues using the existing scheduling flow and does not write adaptive journal records. When enabled, the service can build a preview from current runtime state without replacing current behavior.
 
@@ -12,7 +12,7 @@ The Adaptive Execution Queue is a future orchestration layer for turning plans, 
 
 The runner uses `spawn` with `shell: false` and a finite timeout by default. It is not wired into production scheduling, so no command is executed by the runtime flow unless future code explicitly calls it behind an enabled feature flag.
 
-When `ADAPTIVE_QUEUE_ENABLED=true`, runtime preview can capture lightweight command-runner feedback from recent Copilot outcomes and convert that captured output into adaptive `ExecutionEvent` and `QueueSignal` records for preview journaling. This capture path is preview-only and does not control production scheduling order.
+When `ADAPTIVE_QUEUE_ENABLED=true`, runtime preview capture source is explicitly configured with `ADAPTIVE_PREVIEW_CAPTURE_SOURCE` (`none`, `recent-results`, `validation-probes`) and capped by `ADAPTIVE_PREVIEW_CAPTURE_LIMIT` (default `3`). For `validation-probes`, commands come from `ADAPTIVE_PREVIEW_VALIDATION_PROBES` as a JSON array. This capture path is preview-only and does not control production scheduling order.
 
 Captured results can be converted into `ExecutionEvent` records and `QueueSignal` records. Build, test, and lint output flows through the existing signal classifier, while timed-out or otherwise unclassified nonzero exits become blocker signals.
 
@@ -63,3 +63,4 @@ Conversation work is deterministic: its ID is derived from the signal kind and s
 Rebalancing is score based and deterministic. Higher scores run earlier, and original order breaks ties.
 
 Fix-first behavior is the strongest rule: build, test, or lint failures inject or promote a `fix` item ahead of remaining feature and refactor work. Urgent signals then promote targeted work. Blocked items and items with incomplete dependencies are deprioritized. Completed and skipped work is kept at the end.
+

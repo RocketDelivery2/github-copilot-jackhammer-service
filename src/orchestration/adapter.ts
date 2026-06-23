@@ -1,3 +1,4 @@
+﻿import process from 'node:process';
 import { planRunnableBatch } from './parallelism.js';
 import { rebalanceWorkItems } from './rebalance.js';
 import { classifyExecutionSignals } from './signals.js';
@@ -58,9 +59,30 @@ export type AdaptivePreviewJournalOptions = {
   ) => Promise<EventJournalRecord[]>;
 };
 
+export type AdaptivePreviewCaptureSource = 'none' | 'recent-results' | 'validation-probes';
+
+export type AdaptivePreviewValidationProbe = {
+  command: string;
+  args?: readonly string[];
+  cwd?: string;
+  timeoutMs?: number;
+  workItemId?: string;
+};
+
+export type BuildAdaptivePreviewCaptureRequestsOptions = {
+  enabled: boolean;
+  source: AdaptivePreviewCaptureSource;
+  limit: number;
+  recentResults?: readonly CopilotResult[];
+  validationProbes?: readonly AdaptivePreviewValidationProbe[];
+  defaultCwd?: string;
+  nodeExecutable?: string;
+};
+
 export type AdaptivePreviewCommandCaptureOptions = {
   enabled: boolean;
   requests: readonly CommandExecutionRequest[];
+  captureLimit?: number;
   executeCapture?: (request: CommandExecutionRequest) => Promise<CommandExecutionResult>;
   resultToExecutionEvents?: (result: CommandExecutionResult) => ExecutionEvent[];
   resultToQueueSignals?: (result: CommandExecutionResult) => QueueSignal[];
@@ -140,10 +162,50 @@ export async function captureAdaptivePreviewJournal(
   return appendRecords(options.journalPath, records, { retentionLimit: options.retentionLimit });
 }
 
+export function buildAdaptivePreviewCommandCaptureRequests(
+  options: BuildAdaptivePreviewCaptureRequestsOptions,
+): CommandExecutionRequest[] {
+  if (!options.enabled) {
+    return [];
+  }
+
+  const limit = normalizeCaptureLimit(options.limit);
+  if (limit === 0) {
+    return [];
+  }
+
+  if (options.source === 'none') {
+    return [];
+  }
+
+  if (options.source === 'recent-results') {
+    const nodeExecutable = options.nodeExecutable ?? process.execPath;
+    const cwd = options.defaultCwd ?? process.cwd();
+    return (options.recentResults ?? []).slice(0, limit).map(result => ({
+      command: nodeExecutable,
+      args: ['-e', previewCaptureScriptForResult(result)],
+      cwd,
+      timeoutMs: 2_000,
+      workItemId: `issue:${result.issueNumber}`,
+    }));
+  }
+
+  return (options.validationProbes ?? []).slice(0, limit).map(probe => ({
+    command: probe.command,
+    args: probe.args ? [...probe.args] : undefined,
+    cwd: probe.cwd ?? options.defaultCwd,
+    timeoutMs: probe.timeoutMs,
+    workItemId: probe.workItemId,
+  }));
+}
+
 export async function captureAdaptivePreviewCommandRunnerFeedback(
   options: AdaptivePreviewCommandCaptureOptions,
 ): Promise<AdaptivePreviewCommandCapture> {
-  if (!options.enabled || options.requests.length === 0) {
+  const limit = normalizeCaptureLimit(options.captureLimit ?? options.requests.length);
+  const boundedRequests = options.requests.slice(0, limit);
+
+  if (!options.enabled || boundedRequests.length === 0) {
     return {
       commandResults: [],
       executionEvents: [],
@@ -159,7 +221,7 @@ export async function captureAdaptivePreviewCommandRunnerFeedback(
   const executionEvents: ExecutionEvent[] = [];
   const queueSignals: QueueSignal[] = [];
 
-  for (const request of options.requests) {
+  for (const request of boundedRequests) {
     const result = await executeCapture(cloneCommandExecutionRequest(request));
     commandResults.push(cloneCommandExecutionResult(result));
 
@@ -346,6 +408,19 @@ function addResultSignals(signals: QueueSignal[], results: readonly CopilotResul
   }
 }
 
+function previewCaptureScriptForResult(result: CopilotResult): string {
+  const summary = JSON.stringify(result.summary || result.title || 'No summary provided.');
+  if (result.outcome === 'error' || result.outcome === 'blocked') {
+    return `process.stderr.write(${summary}); process.exit(1);`;
+  }
+
+  if (result.outcome === 'question') {
+    return `process.stderr.write(${summary});`;
+  }
+
+  return `process.stdout.write(${summary});`;
+}
+
 function commandQueueItemId(item: CommandQueueItem): string {
   return item.issueNumber ? `issue:${item.issueNumber}` : `queue:${item.hash}`;
 }
@@ -367,6 +442,14 @@ function pushUniqueSignal(signals: QueueSignal[], signal: QueueSignal): void {
 function trimEvidence(text: string): string {
   const trimmed = text.trim().replace(/\s+/g, ' ');
   return trimmed.length > 200 ? `${trimmed.slice(0, 197)}...` : trimmed;
+}
+
+function normalizeCaptureLimit(limit: number): number {
+  if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit < 0) {
+    throw new RangeError('captureLimit must be a non-negative integer.');
+  }
+
+  return limit;
 }
 
 function cloneWorkItem(item: WorkItem): WorkItem {

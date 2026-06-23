@@ -1,4 +1,4 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 import { z } from 'zod';
 
 const boolish = z.preprocess(v => {
@@ -34,6 +34,9 @@ const ConfigSchema = z.object({
   ADAPTIVE_QUEUE_ENABLED: boolish.default(''),
   ADAPTIVE_EVENT_JOURNAL_PATH: z.string().default('.ai/adaptive-preview-event-journal.json'),
   ADAPTIVE_EVENT_JOURNAL_RETENTION: z.coerce.number().int().nonnegative().default(200),
+  ADAPTIVE_PREVIEW_CAPTURE_SOURCE: z.enum(['none', 'recent-results', 'validation-probes']).default('recent-results'),
+  ADAPTIVE_PREVIEW_CAPTURE_LIMIT: z.coerce.number().int().nonnegative().max(20).default(3),
+  ADAPTIVE_PREVIEW_VALIDATION_PROBES: z.string().default(''),
   RUN_ONCE: boolish.default(''),
 });
 
