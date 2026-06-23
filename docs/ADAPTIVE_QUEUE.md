@@ -12,6 +12,8 @@ The Adaptive Execution Queue is a future orchestration layer for turning plans, 
 
 The runner uses `spawn` with `shell: false` and a finite timeout by default. It is not wired into production scheduling, so no command is executed by the runtime flow unless future code explicitly calls it behind an enabled feature flag.
 
+When `ADAPTIVE_QUEUE_ENABLED=true`, runtime preview can capture lightweight command-runner feedback from recent Copilot outcomes and convert that captured output into adaptive `ExecutionEvent` and `QueueSignal` records for preview journaling. This capture path is preview-only and does not control production scheduling order.
+
 Captured results can be converted into `ExecutionEvent` records and `QueueSignal` records. Build, test, and lint output flows through the existing signal classifier, while timed-out or otherwise unclassified nonzero exits become blocker signals.
 
 ## Event Journal

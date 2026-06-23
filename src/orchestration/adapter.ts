@@ -2,11 +2,17 @@ import { planRunnableBatch } from './parallelism.js';
 import { rebalanceWorkItems } from './rebalance.js';
 import { classifyExecutionSignals } from './signals.js';
 import {
+  commandResultToExecutionEvents,
+  commandResultToQueueSignals,
+  executeCommandCapture,
+} from './command-runner.js';
+import {
   appendEventJournalRecords,
   createExecutionEventJournalRecord,
   createQueueSignalJournalRecord,
 } from './event-journal.js';
 import type { ActiveWorkItem, CommandQueueItem, CopilotGuidance, CopilotResult } from '../types.js';
+import type { CommandExecutionRequest, CommandExecutionResult } from './command-runner.js';
 import type { EventJournalRecord } from './event-journal.js';
 import type { ExecutionEvent, QueueSignal, WorkItem } from './types.js';
 
@@ -50,6 +56,20 @@ export type AdaptivePreviewJournalOptions = {
     records: readonly EventJournalRecord[],
     options?: { retentionLimit?: number },
   ) => Promise<EventJournalRecord[]>;
+};
+
+export type AdaptivePreviewCommandCaptureOptions = {
+  enabled: boolean;
+  requests: readonly CommandExecutionRequest[];
+  executeCapture?: (request: CommandExecutionRequest) => Promise<CommandExecutionResult>;
+  resultToExecutionEvents?: (result: CommandExecutionResult) => ExecutionEvent[];
+  resultToQueueSignals?: (result: CommandExecutionResult) => QueueSignal[];
+};
+
+export type AdaptivePreviewCommandCapture = {
+  commandResults: CommandExecutionResult[];
+  executionEvents: ExecutionEvent[];
+  queueSignals: QueueSignal[];
 };
 
 export function createAdaptiveQueuePreview(
@@ -118,6 +138,45 @@ export async function captureAdaptivePreviewJournal(
 
   const appendRecords = options.appendRecords ?? appendEventJournalRecords;
   return appendRecords(options.journalPath, records, { retentionLimit: options.retentionLimit });
+}
+
+export async function captureAdaptivePreviewCommandRunnerFeedback(
+  options: AdaptivePreviewCommandCaptureOptions,
+): Promise<AdaptivePreviewCommandCapture> {
+  if (!options.enabled || options.requests.length === 0) {
+    return {
+      commandResults: [],
+      executionEvents: [],
+      queueSignals: [],
+    };
+  }
+
+  const executeCapture = options.executeCapture ?? executeCommandCapture;
+  const resultToExecutionEvents = options.resultToExecutionEvents ?? commandResultToExecutionEvents;
+  const resultToQueueSignals = options.resultToQueueSignals ?? commandResultToQueueSignals;
+
+  const commandResults: CommandExecutionResult[] = [];
+  const executionEvents: ExecutionEvent[] = [];
+  const queueSignals: QueueSignal[] = [];
+
+  for (const request of options.requests) {
+    const result = await executeCapture(cloneCommandExecutionRequest(request));
+    commandResults.push(cloneCommandExecutionResult(result));
+
+    for (const event of resultToExecutionEvents(result)) {
+      executionEvents.push(cloneExecutionEvent(event));
+    }
+
+    for (const signal of resultToQueueSignals(result)) {
+      pushUniqueSignal(queueSignals, cloneQueueSignal(signal));
+    }
+  }
+
+  return {
+    commandResults,
+    executionEvents,
+    queueSignals,
+  };
 }
 
 export function mapRuntimeInputsToWorkItems(inputs: AdaptiveQueueRuntimeInputs): WorkItem[] {
@@ -338,5 +397,34 @@ function cloneQueueSignal(signal: QueueSignal): QueueSignal {
     ...(signal.workItemId ? { workItemId: signal.workItemId } : {}),
     ...(signal.targetItemId ? { targetItemId: signal.targetItemId } : {}),
     ...(signal.evidence !== undefined ? { evidence: signal.evidence } : {}),
+  };
+}
+
+function cloneCommandExecutionRequest(request: CommandExecutionRequest): CommandExecutionRequest {
+  return {
+    command: request.command,
+    args: request.args ? [...request.args] : undefined,
+    cwd: request.cwd,
+    env: request.env ? { ...request.env } : undefined,
+    timeoutMs: request.timeoutMs,
+    workItemId: request.workItemId,
+  };
+}
+
+function cloneCommandExecutionResult(result: CommandExecutionResult): CommandExecutionResult {
+  return {
+    command: result.command,
+    executable: result.executable,
+    args: [...result.args],
+    cwd: result.cwd,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode: result.exitCode,
+    startedAt: result.startedAt,
+    completedAt: result.completedAt,
+    durationMs: result.durationMs,
+    timedOut: result.timedOut,
+    timeoutMs: result.timeoutMs,
+    workItemId: result.workItemId,
   };
 }

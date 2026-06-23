@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import {
+  captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
   createAdaptiveQueuePreview,
-  mapRuntimeInputsToExecutionEvents,
   mapRuntimeInputsToQueueSignals,
   mapRuntimeInputsToWorkItems,
 } from './adapter.js';
@@ -14,7 +14,9 @@ import type { AdaptiveQueueRuntimeInputs } from './adapter.js';
 import {
   commandResultToExecutionEvents,
   commandResultToQueueSignals,
+  executeCommandCapture,
 } from './command-runner.js';
+import type { CommandExecutionResult } from './command-runner.js';
 import type { EventJournalRecord } from './event-journal.js';
 
 const runtimeInputs: AdaptiveQueueRuntimeInputs = {
@@ -97,25 +99,19 @@ describe('adaptive queue adapter', () => {
   });
 
   it('writes preview execution events to the journal when adaptive preview is enabled', async () => {
-    const executionEvents = commandResultToExecutionEvents({
-      command: 'npm.cmd run build',
-      executable: 'npm.cmd',
-      args: ['run', 'build'],
-      cwd: process.cwd(),
-      stdout: '',
-      stderr: 'TS2322: Type mismatch',
-      exitCode: 1,
-      startedAt: '2026-06-20T12:11:00.000Z',
-      completedAt: '2026-06-20T12:11:01.000Z',
-      durationMs: 1000,
-      timedOut: false,
-      timeoutMs: 60_000,
-      workItemId: 'validate:build',
+    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests: [{
+        command: process.execPath,
+        args: ['-e', 'process.stderr.write("error TS2322: Type mismatch"); process.exit(1);'],
+        timeoutMs: 1_000,
+        workItemId: 'validate:build',
+      }],
     });
     const preview = createAdaptiveQueuePreview({
       ...runtimeInputs,
-      executionEvents,
-      queueSignals: [],
+      executionEvents: capture.executionEvents,
+      queueSignals: capture.queueSignals,
     }, { enabled: true });
     const appended: EventJournalRecord[] = [];
 
@@ -137,25 +133,19 @@ describe('adaptive queue adapter', () => {
   });
 
   it('writes preview queue signals to the journal when adaptive preview is enabled', async () => {
-    const queueSignals = commandResultToQueueSignals({
-      command: 'npm.cmd test',
-      executable: 'npm.cmd',
-      args: ['test'],
-      cwd: process.cwd(),
-      stdout: '',
-      stderr: 'npm test failed with assertion error',
-      exitCode: 1,
-      startedAt: '2026-06-20T12:13:00.000Z',
-      completedAt: '2026-06-20T12:13:01.000Z',
-      durationMs: 1000,
-      timedOut: false,
-      timeoutMs: 60_000,
-      workItemId: 'validate:test',
+    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests: [{
+        command: process.execPath,
+        args: ['-e', 'process.stderr.write("npm test failed with assertion error"); process.exit(1);'],
+        timeoutMs: 1_000,
+        workItemId: 'validate:test',
+      }],
     });
     const preview = createAdaptiveQueuePreview({
       ...runtimeInputs,
-      executionEvents: [],
-      queueSignals,
+      executionEvents: capture.executionEvents,
+      queueSignals: capture.queueSignals,
     }, { enabled: true });
     const appended: EventJournalRecord[] = [];
 
@@ -193,23 +183,88 @@ describe('adaptive queue adapter', () => {
     assert.deepEqual(records, []);
   });
 
-  it('uses configured journal path and retention', async () => {
+  it('does not invoke command-runner preview capture while adaptive preview is disabled', async () => {
+    let captureInvoked = false;
+
+    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: false,
+      requests: [{
+        command: process.execPath,
+        args: ['-e', 'process.stdout.write("ignored")'],
+      }],
+      executeCapture: async () => {
+        captureInvoked = true;
+        return buildCommandExecutionResult({
+          command: 'node -e "ignored"',
+          executable: process.execPath,
+          args: ['-e', 'process.stdout.write("ignored")'],
+          stdout: 'ignored',
+          workItemId: 'issue:42',
+        });
+      },
+    });
+
+    assert.equal(captureInvoked, false);
+    assert.deepEqual(capture.commandResults, []);
+    assert.deepEqual(capture.executionEvents, []);
+    assert.deepEqual(capture.queueSignals, []);
+  });
+
+  it('captures timeout failures as preview-only signals without changing disabled legacy scheduling', async () => {
+    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests: [{
+        command: process.execPath,
+        args: ['-e', 'setTimeout(() => process.stdout.write("late"), 1000)'],
+        timeoutMs: 50,
+        workItemId: 'issue:42',
+      }],
+      executeCapture: async (request) => buildCommandExecutionResult({
+        command: `${request.command} ${(request.args ?? []).join(' ')}`.trim(),
+        executable: request.command,
+        args: [...(request.args ?? [])],
+        exitCode: null,
+        timedOut: true,
+        timeoutMs: request.timeoutMs ?? 50,
+        stderr: '',
+        stdout: '',
+        workItemId: request.workItemId,
+      }),
+    });
+
+    assert.ok(capture.queueSignals.some(signal =>
+      signal.kind === 'blocker'
+      && signal.severity === 'error'
+      && signal.workItemId === 'issue:42'
+      && /timed out/i.test(signal.message)));
+
     const preview = createAdaptiveQueuePreview({
       ...runtimeInputs,
-      executionEvents: mapRuntimeInputsToExecutionEvents({
-        executionEvents: [{
-          workItemId: 'validate:lint',
-          kind: 'failed',
-          message: 'Command exited with code 1.',
-          exitCode: 1,
-        }],
-      }),
-      queueSignals: [{
-        kind: 'lint_failure',
-        severity: 'error',
-        message: 'ESLint failure detected.',
+      executionEvents: capture.executionEvents,
+      queueSignals: capture.queueSignals,
+    }, { enabled: false });
+
+    assert.equal(preview.mode, 'legacy');
+    assert.equal(preview.schedulerInvoked, false);
+    assert.deepEqual(preview.scheduledWorkItemIds, []);
+    assert.deepEqual(preview.executionEvents, []);
+    assert.deepEqual(preview.signals, []);
+  });
+
+  it('uses configured journal path and retention', async () => {
+    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests: [{
+        command: process.execPath,
+        args: ['-e', 'process.stderr.write("eslint failed with 1 problem"); process.exit(1);'],
+        timeoutMs: 1_000,
         workItemId: 'validate:lint',
       }],
+    });
+    const preview = createAdaptiveQueuePreview({
+      ...runtimeInputs,
+      executionEvents: capture.executionEvents,
+      queueSignals: capture.queueSignals,
     }, { enabled: true });
 
     let pathArg = '';
@@ -235,15 +290,20 @@ describe('adaptive queue adapter', () => {
     const journalPath = path.join(directory, 'journal.json');
     await writeFile(journalPath, '{ broken json', 'utf8');
 
+    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests: [{
+        command: process.execPath,
+        args: ['-e', 'process.stderr.write("npm run build failed with error TS2322"); process.exit(1);'],
+        timeoutMs: 1_000,
+        workItemId: 'validate:build',
+      }],
+    });
+
     const preview = createAdaptiveQueuePreview({
       ...runtimeInputs,
-      executionEvents: [{
-        workItemId: 'validate:build',
-        kind: 'failed',
-        message: 'Command exited with code 1.',
-        exitCode: 1,
-      }],
-      queueSignals: [],
+      executionEvents: capture.executionEvents,
+      queueSignals: capture.queueSignals,
     }, { enabled: true });
 
     await assert.rejects(
@@ -254,4 +314,39 @@ describe('adaptive queue adapter', () => {
       /Malformed event journal .* invalid JSON/,
     );
   });
+
+  it('keeps command-runner conversion behavior intact', async () => {
+    const result = await executeCommandCapture({
+      command: process.execPath,
+      args: ['-e', 'process.stderr.write("npm test failed with assertion error"); process.exit(1)'],
+      timeoutMs: 1_000,
+      workItemId: 'validate:test',
+    });
+
+    const events = commandResultToExecutionEvents(result);
+    const signals = commandResultToQueueSignals(result);
+
+    assert.deepEqual(events.map(event => event.kind), ['started', 'stderr', 'exit', 'failed']);
+    assert.ok(signals.some(signal => signal.kind === 'test_failure'));
+  });
 });
+
+function buildCommandExecutionResult(
+  override: Partial<CommandExecutionResult> & Pick<CommandExecutionResult, 'command' | 'executable' | 'args'>,
+): CommandExecutionResult {
+  return {
+    command: override.command,
+    executable: override.executable,
+    args: override.args,
+    cwd: override.cwd ?? process.cwd(),
+    stdout: override.stdout ?? '',
+    stderr: override.stderr ?? '',
+    exitCode: override.exitCode ?? 0,
+    startedAt: override.startedAt ?? '2026-06-20T12:00:00.000Z',
+    completedAt: override.completedAt ?? '2026-06-20T12:00:01.000Z',
+    durationMs: override.durationMs ?? 1_000,
+    timedOut: override.timedOut ?? false,
+    timeoutMs: override.timeoutMs ?? 1_000,
+    workItemId: override.workItemId,
+  };
+}
