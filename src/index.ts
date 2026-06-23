@@ -18,11 +18,12 @@ import { extractCopilotGuidance, rebalanceQueue, detectCopilotQuestion } from '.
 import type { ActiveWorkItem, CommandQueueItem, CopilotResult, QueueState } from './types.js';
 import { applyIndustryStandardsPriority } from './standards.js';
 import {
+  buildAdaptivePreviewCommandCaptureRequests,
   captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
   createAdaptiveQueuePreview,
 } from './orchestration/adapter.js';
-import type { CommandExecutionRequest } from './orchestration/command-runner.js';
+import type { AdaptivePreviewValidationProbe } from './orchestration/adapter.js';
 
 const argv = yargs(hideBin(process.argv))
   .option('once', { type: 'boolean', default: false })
@@ -47,7 +48,7 @@ async function doctor() {
   console.log('GitHub Copilot JackHammer Service doctor complete.');
 }
 
-// ─── Active-work handling ────────────────────────────────────────────────────
+// â”€â”€â”€ Active-work handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Handles the current active work item (issue + optional linked PR).
@@ -183,7 +184,7 @@ async function handleLinkedPR(state: QueueState, active: ActiveWorkItem): Promis
     return true;
   }
 
-  // Checks pass — maybe approve and/or merge.
+  // Checks pass - maybe approve and/or merge.
   const canAutoApprove = config.FULL_AUTOPILOT || config.AUTO_APPROVE_PR;
   const canAutoMerge = config.FULL_AUTOPILOT || config.AUTO_MERGE_PR;
 
@@ -222,30 +223,60 @@ function recordResult(state: QueueState, active: ActiveWorkItem, outcome: Copilo
   ].slice(0, 20); // keep last 20 results
 }
 
-function buildAdaptivePreviewCaptureRequests(state: QueueState): CommandExecutionRequest[] {
-  return state.recentCopilotResults.slice(0, 3).map(result => ({
-    command: process.execPath,
-    args: ['-e', previewCaptureScriptForResult(result)],
-    cwd: process.cwd(),
-    timeoutMs: 2_000,
-    workItemId: `issue:${result.issueNumber}`,
-  }));
-}
+function parseAdaptivePreviewValidationProbes(raw: string): AdaptivePreviewValidationProbe[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
 
-function previewCaptureScriptForResult(result: CopilotResult): string {
-  const summary = JSON.stringify(result.summary || result.title || 'No summary provided.');
-  if (result.outcome === 'error' || result.outcome === 'blocked') {
-    return `process.stderr.write(${summary}); process.exit(1);`;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new Error('ADAPTIVE_PREVIEW_VALIDATION_PROBES must be a valid JSON array.');
   }
 
-  if (result.outcome === 'question') {
-    return `process.stderr.write(${summary});`;
+  if (!Array.isArray(parsed)) {
+    throw new Error('ADAPTIVE_PREVIEW_VALIDATION_PROBES must be a JSON array.');
   }
 
-  return `process.stdout.write(${summary});`;
+  return parsed.map((entry, index) => parseValidationProbe(entry, index));
 }
 
-// ─── Main run loop ───────────────────────────────────────────────────────────
+function parseValidationProbe(value: unknown, index: number): AdaptivePreviewValidationProbe {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`ADAPTIVE_PREVIEW_VALIDATION_PROBES[${index}] must be an object.`);
+  }
+
+  const probe = value as Record<string, unknown>;
+  if (typeof probe.command !== 'string' || probe.command.trim().length === 0) {
+    throw new Error(`ADAPTIVE_PREVIEW_VALIDATION_PROBES[${index}].command must be a non-empty string.`);
+  }
+
+  if (probe.args !== undefined && (!Array.isArray(probe.args) || probe.args.some(arg => typeof arg !== 'string'))) {
+    throw new Error(`ADAPTIVE_PREVIEW_VALIDATION_PROBES[${index}].args must be an array of strings.`);
+  }
+
+  if (probe.cwd !== undefined && typeof probe.cwd !== 'string') {
+    throw new Error(`ADAPTIVE_PREVIEW_VALIDATION_PROBES[${index}].cwd must be a string.`);
+  }
+
+  if (probe.timeoutMs !== undefined && (!Number.isFinite(probe.timeoutMs) || Number(probe.timeoutMs) <= 0)) {
+    throw new Error(`ADAPTIVE_PREVIEW_VALIDATION_PROBES[${index}].timeoutMs must be a positive number.`);
+  }
+
+  if (probe.workItemId !== undefined && typeof probe.workItemId !== 'string') {
+    throw new Error(`ADAPTIVE_PREVIEW_VALIDATION_PROBES[${index}].workItemId must be a string.`);
+  }
+
+  return {
+    command: probe.command.trim(),
+    args: Array.isArray(probe.args) ? probe.args : undefined,
+    cwd: typeof probe.cwd === 'string' ? probe.cwd : undefined,
+    timeoutMs: probe.timeoutMs === undefined ? undefined : Number(probe.timeoutMs),
+    workItemId: typeof probe.workItemId === 'string' ? probe.workItemId : undefined,
+  };
+}
+
+// â”€â”€â”€ Main run loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function runOnce(): Promise<void> {
   // 1. Sync repo and build snapshot.
@@ -260,9 +291,21 @@ async function runOnce(): Promise<void> {
   }
 
   if (config.ADAPTIVE_QUEUE_ENABLED) {
+    const previewRequests = buildAdaptivePreviewCommandCaptureRequests({
+      enabled: true,
+      source: config.ADAPTIVE_PREVIEW_CAPTURE_SOURCE,
+      limit: config.ADAPTIVE_PREVIEW_CAPTURE_LIMIT,
+      recentResults: state.recentCopilotResults,
+      validationProbes: config.ADAPTIVE_PREVIEW_CAPTURE_SOURCE === 'validation-probes'
+        ? parseAdaptivePreviewValidationProbes(config.ADAPTIVE_PREVIEW_VALIDATION_PROBES)
+        : [],
+      defaultCwd: process.cwd(),
+      nodeExecutable: process.execPath,
+    });
     const previewCapture = await captureAdaptivePreviewCommandRunnerFeedback({
       enabled: true,
-      requests: buildAdaptivePreviewCaptureRequests(state),
+      requests: previewRequests,
+      captureLimit: config.ADAPTIVE_PREVIEW_CAPTURE_LIMIT,
     });
     const adaptivePreview = createAdaptiveQueuePreview({
       activeWorkItem: state.activeWorkItem,
@@ -411,3 +454,5 @@ main().catch(err => {
   console.error(err);
   process.exit(1);
 });
+
+

@@ -1,16 +1,20 @@
-import assert from 'node:assert/strict';
+﻿import assert from 'node:assert/strict';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import {
+  buildAdaptivePreviewCommandCaptureRequests,
   captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
   createAdaptiveQueuePreview,
   mapRuntimeInputsToQueueSignals,
   mapRuntimeInputsToWorkItems,
 } from './adapter.js';
-import type { AdaptiveQueueRuntimeInputs } from './adapter.js';
+import type {
+  AdaptivePreviewValidationProbe,
+  AdaptiveQueueRuntimeInputs,
+} from './adapter.js';
 import {
   commandResultToExecutionEvents,
   commandResultToQueueSignals,
@@ -98,6 +102,126 @@ describe('adaptive queue adapter', () => {
     ]);
   });
 
+  it('disabled preview yields no capture requests regardless of source', () => {
+    const recent = buildAdaptivePreviewCommandCaptureRequests({
+      enabled: false,
+      source: 'recent-results',
+      limit: 3,
+      recentResults: runtimeInputs.recentResults,
+    });
+    const probes = buildAdaptivePreviewCommandCaptureRequests({
+      enabled: false,
+      source: 'validation-probes',
+      limit: 3,
+      validationProbes: [{ command: 'npm.cmd', args: ['test'] }],
+    });
+
+    assert.deepEqual(recent, []);
+    assert.deepEqual(probes, []);
+  });
+
+  it('source none yields no requests and no capture', async () => {
+    const requests = buildAdaptivePreviewCommandCaptureRequests({
+      enabled: true,
+      source: 'none',
+      limit: 3,
+      recentResults: runtimeInputs.recentResults,
+    });
+
+    let captureInvoked = false;
+    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests,
+      executeCapture: async () => {
+        captureInvoked = true;
+        return buildCommandExecutionResult({
+          command: 'noop',
+          executable: process.execPath,
+          args: ['-e', 'process.stdout.write("noop")'],
+        });
+      },
+    });
+
+    assert.deepEqual(requests, []);
+    assert.equal(captureInvoked, false);
+    assert.deepEqual(capture.commandResults, []);
+    assert.deepEqual(capture.executionEvents, []);
+    assert.deepEqual(capture.queueSignals, []);
+  });
+
+  it('source recent-results preserves preview capture behavior', async () => {
+    const requests = buildAdaptivePreviewCommandCaptureRequests({
+      enabled: true,
+      source: 'recent-results',
+      limit: 3,
+      recentResults: runtimeInputs.recentResults,
+      nodeExecutable: process.execPath,
+      defaultCwd: process.cwd(),
+    });
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.command, process.execPath);
+    assert.equal(requests[0]?.workItemId, 'issue:44');
+
+    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests,
+    });
+
+    assert.equal(capture.commandResults.length, 1);
+    assert.ok(capture.executionEvents.length > 0);
+    assert.ok(capture.queueSignals.some(signal => signal.kind === 'test_failure'));
+  });
+
+  it('source validation-probes runs only configured capped probes', () => {
+    const probes: AdaptivePreviewValidationProbe[] = [
+      { command: 'npm.cmd', args: ['run', 'build'], workItemId: 'validate:build' },
+      { command: 'npm.cmd', args: ['test'], workItemId: 'validate:test' },
+    ];
+
+    const requests = buildAdaptivePreviewCommandCaptureRequests({
+      enabled: true,
+      source: 'validation-probes',
+      limit: 1,
+      validationProbes: probes,
+      defaultCwd: 'C:\\repo',
+    });
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.command, 'npm.cmd');
+    assert.deepEqual(requests[0]?.args, ['run', 'build']);
+    assert.equal(requests[0]?.workItemId, 'validate:build');
+    assert.equal(requests[0]?.cwd, 'C:\\repo');
+  });
+
+  it('enforces capture limit deterministically', async () => {
+    const requests = [
+      { command: process.execPath, args: ['-e', 'process.stdout.write("one")'], workItemId: 'w1' },
+      { command: process.execPath, args: ['-e', 'process.stdout.write("two")'], workItemId: 'w2' },
+      { command: process.execPath, args: ['-e', 'process.stdout.write("three")'], workItemId: 'w3' },
+    ];
+
+    const executed: string[] = [];
+    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests,
+      captureLimit: 2,
+      executeCapture: async request => {
+        executed.push(request.workItemId ?? 'unknown');
+        return buildCommandExecutionResult({
+          command: request.command,
+          executable: request.command,
+          args: [...(request.args ?? [])],
+          stdout: request.workItemId ?? 'unknown',
+          workItemId: request.workItemId,
+        });
+      },
+    });
+
+    assert.deepEqual(executed, ['w1', 'w2']);
+    assert.equal(capture.commandResults.length, 2);
+  });
+
   it('writes preview execution events to the journal when adaptive preview is enabled', async () => {
     const capture = await captureAdaptivePreviewCommandRunnerFeedback({
       enabled: true,
@@ -181,33 +305,6 @@ describe('adaptive queue adapter', () => {
 
     assert.equal(appendInvoked, false);
     assert.deepEqual(records, []);
-  });
-
-  it('does not invoke command-runner preview capture while adaptive preview is disabled', async () => {
-    let captureInvoked = false;
-
-    const capture = await captureAdaptivePreviewCommandRunnerFeedback({
-      enabled: false,
-      requests: [{
-        command: process.execPath,
-        args: ['-e', 'process.stdout.write("ignored")'],
-      }],
-      executeCapture: async () => {
-        captureInvoked = true;
-        return buildCommandExecutionResult({
-          command: 'node -e "ignored"',
-          executable: process.execPath,
-          args: ['-e', 'process.stdout.write("ignored")'],
-          stdout: 'ignored',
-          workItemId: 'issue:42',
-        });
-      },
-    });
-
-    assert.equal(captureInvoked, false);
-    assert.deepEqual(capture.commandResults, []);
-    assert.deepEqual(capture.executionEvents, []);
-    assert.deepEqual(capture.queueSignals, []);
   });
 
   it('captures timeout failures as preview-only signals without changing disabled legacy scheduling', async () => {
