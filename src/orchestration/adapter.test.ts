@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import {
+  buildAdaptivePreviewSkillExecutionPlans,
   buildAdaptivePreviewCommandCaptureRequests,
   captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
@@ -25,6 +26,7 @@ import {
 import type { CommandExecutionResult } from './command-runner.js';
 import type { EventJournalRecord } from './event-journal.js';
 import { createSkillMetadataIndex } from '../skills/registry.js';
+import type { SkillDocument } from '../skills/types.js';
 
 const runtimeInputs: AdaptiveQueueRuntimeInputs = {
   activeWorkItem: {
@@ -419,6 +421,193 @@ keywords: [error, failure, repair]
     assert.equal(skillRecord.selection.skillName, 'error-recovery');
     assert.equal(skillRecord.selection.trustPolicySummary.scriptsRequireHumanApproval, true);
     assert.equal(skillRecord.selection.trustPolicySummary.scriptsAutoExecutable, false);
+  });
+
+  it('disabled/default path produces no skill execution plans', async () => {
+    const skillIndex = createSkillMetadataIndex([{
+      skillPath: 'skills/validation/skill.md',
+      markdown: `---
+name: validation
+description: Validate code changes with test build lint workflow.
+version: 1.0.0
+risk: low
+allowedTools: [npm.cmd]
+resourceHints: [package.json]
+keywords: [validation, test, build, lint]
+---
+`,
+    }]);
+
+    const plans = await buildAdaptivePreviewSkillExecutionPlans({
+      enabled: false,
+      skillSelections: [],
+      skillIndex,
+    });
+
+    assert.deepEqual(plans, []);
+  });
+
+  it('enabled preview produces deterministic bounded dry-run execution plans from selected skills only', async () => {
+    const skillIndex = createSkillMetadataIndex([
+      {
+        skillPath: 'skills/validation/skill.md',
+        markdown: `---
+name: validation
+description: Validate code changes with test build lint workflow.
+version: 1.0.0
+risk: low
+allowedTools: [npm.cmd]
+resourceHints: [package.json]
+keywords: [validation, test, build, lint]
+---
+`,
+      },
+      {
+        skillPath: 'skills/error-recovery/skill.md',
+        markdown: `---
+name: error-recovery
+description: Recover from command failures with one repair step.
+version: 1.0.0
+risk: medium
+allowedTools: [powershell]
+resourceHints: [logs]
+keywords: [error, failure, repair]
+---
+`,
+      },
+    ]);
+
+    const selected = selectAdaptivePreviewSkills({
+      enabled: true,
+      skillIndex,
+      tasks: [
+        { id: 'task:validate', title: 'run test build lint validation' },
+        { id: 'task:error', title: 'command failure needs repair' },
+      ],
+      maxSelections: 2,
+      maxMatchesPerTask: 1,
+    });
+
+    const loadCalls: string[] = [];
+    const mockLoad = async (filePath: string): Promise<SkillDocument> => {
+      loadCalls.push(filePath);
+      return {
+        metadata: {
+          name: filePath.includes('validation') ? 'validation' : 'error-recovery',
+          description: 'mock',
+          version: '1.0.0',
+          risk: filePath.includes('validation') ? 'low' : 'medium',
+          allowedTools: [],
+          resourceHints: [],
+          keywords: [],
+          skillPath: filePath,
+        },
+        body: [
+          '# Mock Skill',
+          '## Procedure',
+          '1. Step one',
+          '2. Step two',
+          '3. Step three',
+        ].join('\n'),
+      };
+    };
+
+    const first = await buildAdaptivePreviewSkillExecutionPlans({
+      enabled: true,
+      skillSelections: selected,
+      skillIndex,
+      maxPlans: 1,
+      maxStepsPerPlan: 2,
+      loadSkillDocument: mockLoad,
+    });
+    const second = await buildAdaptivePreviewSkillExecutionPlans({
+      enabled: true,
+      skillSelections: selected,
+      skillIndex,
+      maxPlans: 1,
+      maxStepsPerPlan: 2,
+      loadSkillDocument: mockLoad,
+    });
+
+    assert.equal(first.length, 1);
+    assert.deepEqual(first, second);
+    assert.equal(first[0]?.plannedSteps.length, 2);
+    assert.equal(first[0]?.trustPolicySummary.scriptExecutionBlocked, true);
+    assert.equal(first[0]?.trustPolicySummary.scriptsAutoExecutable, false);
+    assert.equal(first[0]?.trustPolicySummary.scriptsRequireHumanApproval, true);
+    assert.equal(loadCalls.length >= 2, true);
+  });
+
+  it('captures preview skill execution plans as journal records', async () => {
+    const skillIndex = createSkillMetadataIndex([{
+      skillPath: 'skills/validation/skill.md',
+      markdown: `---
+name: validation
+description: Validate code changes with test build lint workflow.
+version: 1.0.0
+risk: low
+allowedTools: [npm.cmd]
+resourceHints: [package.json]
+keywords: [validation, test, build, lint]
+---
+`,
+    }]);
+
+    const selected = selectAdaptivePreviewSkills({
+      enabled: true,
+      skillIndex,
+      tasks: [{ id: 'task:validate', title: 'run test build lint validation' }],
+      maxSelections: 1,
+      maxMatchesPerTask: 1,
+    });
+    const plans = await buildAdaptivePreviewSkillExecutionPlans({
+      enabled: true,
+      skillSelections: selected,
+      skillIndex,
+      maxPlans: 1,
+      maxStepsPerPlan: 2,
+      loadSkillDocument: async (filePath): Promise<SkillDocument> => ({
+        metadata: {
+          name: 'validation',
+          description: 'mock',
+          version: '1.0.0',
+          risk: 'low',
+          allowedTools: ['npm.cmd'],
+          resourceHints: [],
+          keywords: [],
+          skillPath: filePath,
+        },
+        body: '1. Run npm.cmd test\n2. Run npm.cmd run build\n3. Run npm.cmd run lint',
+      }),
+    });
+
+    const preview = createAdaptiveQueuePreview({
+      ...runtimeInputs,
+      skillSelections: selected,
+      skillExecutionPlans: plans,
+    }, { enabled: true });
+    const appended: EventJournalRecord[] = [];
+
+    await captureAdaptivePreviewJournal(preview, {
+      enabled: true,
+      journalPath: 'ignored.json',
+      appendRecords: async (_filePath, records) => {
+        appended.push(...records);
+        return [...records];
+      },
+      now: () => '2026-06-20T12:16:00.000Z',
+      source: 'adapter-test',
+    });
+
+    const planRecord = appended.find(record => record.type === 'skill_execution_plan');
+    assert.ok(planRecord && planRecord.type === 'skill_execution_plan');
+    if (!planRecord || planRecord.type !== 'skill_execution_plan') {
+      throw new Error('Expected a skill_execution_plan record to be appended.');
+    }
+    assert.equal(planRecord.plan.skillName, 'validation');
+    assert.equal(planRecord.plan.trustPolicySummary.scriptExecutionBlocked, true);
+    assert.equal(planRecord.plan.trustPolicySummary.scriptsAutoExecutable, false);
+    assert.equal(planRecord.plan.plannedSteps.length, 2);
   });
 
   it('writes preview execution events to the journal when adaptive preview is enabled', async () => {

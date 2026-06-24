@@ -19,6 +19,7 @@ import { extractCopilotGuidance, rebalanceQueue, detectCopilotQuestion } from '.
 import type { ActiveWorkItem, CommandQueueItem, CopilotResult, QueueState } from './types.js';
 import { applyIndustryStandardsPriority } from './standards.js';
 import {
+  buildAdaptivePreviewSkillExecutionPlans,
   buildAdaptivePreviewCommandCaptureRequests,
   captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
@@ -386,6 +387,13 @@ async function runOnce(): Promise<void> {
       maxSelections: 8,
       maxMatchesPerTask: 1,
     });
+    const skillExecutionPlans = await buildAdaptivePreviewSkillExecutionPlans({
+      enabled: true,
+      skillSelections,
+      skillIndex: skillMetadataIndex,
+      maxPlans: 8,
+      maxStepsPerPlan: 6,
+    });
     const adaptivePreview = createAdaptiveQueuePreview({
       activeWorkItem: state.activeWorkItem,
       commandQueue: state.commandQueue,
@@ -394,6 +402,7 @@ async function runOnce(): Promise<void> {
       executionEvents: previewCapture.executionEvents,
       queueSignals: previewCapture.queueSignals,
       skillSelections,
+      skillExecutionPlans,
     }, { enabled: true });
     const journalRecords = await captureAdaptivePreviewJournal(adaptivePreview, {
       enabled: true,
@@ -408,6 +417,9 @@ async function runOnce(): Promise<void> {
     }
     if (skillSelections.length > 0) {
       console.log(`Adaptive queue preview selected ${skillSelections.length} skill metadata record(s).`);
+    }
+    if (skillExecutionPlans.length > 0) {
+      console.log(`Adaptive queue preview generated ${skillExecutionPlans.length} dry-run skill execution plan(s).`);
     }
     console.log(`Adaptive queue preview planned ${adaptivePreview.scheduledWorkItemIds.length} item(s); existing scheduling flow remains active.`);
   }
@@ -537,4 +549,3 @@ main().catch(err => {
   console.error(err);
   process.exit(1);
 });
-
