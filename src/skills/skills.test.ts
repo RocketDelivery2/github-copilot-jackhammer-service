@@ -1,6 +1,7 @@
-import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+﻿import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, it } from 'node:test';
 import { parseSkillDocument, parseSkillMetadata } from './loader.js';
 import { createSkillMetadataIndex } from './registry.js';
@@ -8,6 +9,7 @@ import { selectSkillsForTask } from './selector.js';
 import { buildSkillApprovalCheckpoints } from './approval-checkpoint.js';
 import { applyApprovalDecision, applyApprovalDecisions } from './approval-decision.js';
 import { parseDecisionInputs } from './decision-input-source.js';
+import { applyPersistedApprovalState, loadApprovalStatePersistence, parseApprovalStatePersistence, saveApprovalStatePersistence } from './approval-state-persistence.js';
 import { evaluateSkillResourcePolicy, isSkillResourceExecutionAllowed } from './trust-policy.js';
 
 async function readSkillMarkdown(skillName: string): Promise<string> {
@@ -447,5 +449,127 @@ describe('approval decision input source', () => {
       const result = parseDecisionInputs([{ ...base, decision }]);
       assert.equal(result.inputs.length, 1, `Expected decision "${decision}" to be valid`);
     }
+  });
+});
+
+
+describe('approval state persistence model', () => {
+  async function withTempDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
+    const dir = await mkdtemp(path.join(tmpdir(), 'jh-approval-state-'));
+    try {
+      return await run(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('loads empty state when the persistence file is missing', async () => {
+    await withTempDir(async dir => {
+      const record = await loadApprovalStatePersistence(path.join(dir, 'missing.json'));
+
+      assert.deepEqual(record, { version: 1, checkpoints: [] });
+    });
+  });
+
+  it('throws a clear error for malformed JSON', async () => {
+    await withTempDir(async dir => {
+      const filePath = path.join(dir, 'malformed.json');
+      await writeFile(filePath, '{not-json', 'utf8');
+
+      await assert.rejects(
+        () => loadApprovalStatePersistence(filePath),
+        /Malformed approval state persistence JSON/,
+      );
+    });
+  });
+
+  it('saves deterministic JSON ordered by checkpoint id', async () => {
+    await withTempDir(async dir => {
+      const filePath = path.join(dir, 'state.json');
+
+      await saveApprovalStatePersistence(filePath, {
+        version: 1,
+        checkpoints: [
+          { checkpointId: 'risk:task:validation', approvalState: 'not_required' },
+          {
+            checkpointId: 'script:task:validation',
+            approvalState: 'approved',
+            decision: {
+              decision: 'approve',
+              decidedBy: 'human-preview',
+              decidedAt: '2026-06-24T00:00:00.000Z',
+              reason: 'approved for preview',
+            },
+          },
+        ],
+      });
+
+      const first = await readFile(filePath, 'utf8');
+      await saveApprovalStatePersistence(filePath, JSON.parse(first));
+      const second = await readFile(filePath, 'utf8');
+
+      assert.equal(first, second);
+      assert.ok(first.indexOf('risk:task:validation') < first.indexOf('script:task:validation'));
+    });
+  });
+
+  it('applies persisted approved rejected and not_required checkpoint states deterministically', () => {
+    const checkpoints = [
+      {
+        checkpointId: 'script:task:validation',
+        taskId: 'task',
+        skillName: 'validation',
+        resourceType: 'script' as const,
+        reason: 'Script approval required.',
+        risk: 'medium' as const,
+        approvalState: 'pending' as const,
+        createdSource: 'adaptive-preview' as const,
+      },
+      {
+        checkpointId: 'risk:task:validation',
+        taskId: 'task',
+        skillName: 'validation',
+        resourceType: 'risk_gate' as const,
+        reason: 'Risk gate approval required.',
+        risk: 'medium' as const,
+        approvalState: 'pending' as const,
+        createdSource: 'adaptive-preview' as const,
+      },
+      {
+        checkpointId: 'reference:task:validation',
+        taskId: 'task',
+        skillName: 'validation',
+        resourceType: 'reference' as const,
+        reason: 'Reference approval not required.',
+        risk: 'low' as const,
+        approvalState: 'pending' as const,
+        createdSource: 'adaptive-preview' as const,
+      },
+    ];
+
+    const updated = applyPersistedApprovalState(checkpoints, parseApprovalStatePersistence({
+      version: 1,
+      checkpoints: [
+        { checkpointId: 'script:task:validation', approvalState: 'rejected' },
+        { checkpointId: 'risk:task:validation', approvalState: 'approved' },
+        { checkpointId: 'reference:task:validation', approvalState: 'not_required' },
+      ],
+    }));
+
+    assert.equal(updated[0].approvalState, 'rejected');
+    assert.equal(updated[1].approvalState, 'approved');
+    assert.equal(updated[2].approvalState, 'not_required');
+    assert.equal(Object.prototype.hasOwnProperty.call(updated[0], 'autoExecutable'), false);
+    assert.equal(checkpoints[0].approvalState, 'pending');
+  });
+
+  it('rejects pending as a persisted resolved checkpoint state', () => {
+    assert.throws(
+      () => parseApprovalStatePersistence({
+        version: 1,
+        checkpoints: [{ checkpointId: 'script:task:validation', approvalState: 'pending' }],
+      }),
+      /invalid approvalState/,
+    );
   });
 });
