@@ -11,6 +11,7 @@ import {
   appendEventJournalRecords,
   createExecutionEventJournalRecord,
   createSkillApprovalCheckpointJournalRecord,
+  createSkillApprovalDecisionJournalRecord,
   createSkillExecutionPlanJournalRecord,
   createQueueSignalJournalRecord,
   createSkillSelectionJournalRecord,
@@ -20,12 +21,15 @@ import type { CommandExecutionRequest, CommandExecutionResult } from './command-
 import type { EventJournalRecord } from './event-journal.js';
 import type { ExecutionEvent, QueueSignal, WorkItem } from './types.js';
 import { buildSkillApprovalCheckpoints } from '../skills/approval-checkpoint.js';
+import { applyApprovalDecisions } from '../skills/approval-decision.js';
 import { buildSkillExecutionPlan } from '../skills/execution-plan.js';
 import { loadSkillDocumentFromFile } from '../skills/loader.js';
 import { selectSkillsForTask } from '../skills/selector.js';
 import { evaluateSkillResourcePolicy } from '../skills/trust-policy.js';
 import type {
+  ApprovalDecisionInput,
   SkillApprovalCheckpoint,
+  SkillApprovalCheckpointTransition,
   SkillDocument,
   SkillExecutionPlan,
   SkillMetadataIndex,
@@ -42,6 +46,7 @@ export type AdaptiveQueueRuntimeInputs = {
   skillSelections?: readonly AdaptivePreviewSkillSelection[];
   skillExecutionPlans?: readonly SkillExecutionPlan[];
   skillApprovalCheckpoints?: readonly SkillApprovalCheckpoint[];
+  skillApprovalDecisionInputs?: readonly ApprovalDecisionInput[];
 };
 
 export type AdaptiveScheduler = (
@@ -64,6 +69,7 @@ export type AdaptiveQueuePreview = {
   skillSelections: AdaptivePreviewSkillSelection[];
   skillExecutionPlans: SkillExecutionPlan[];
   skillApprovalCheckpoints: SkillApprovalCheckpoint[];
+  skillApprovalDecisions: SkillApprovalCheckpointTransition[];
   scheduledWorkItemIds: string[];
 };
 
@@ -159,6 +165,13 @@ export type AdaptivePreviewSkillApprovalCheckpointOptions = {
   maxCheckpoints?: number;
 };
 
+export type AdaptivePreviewApprovalDecisionOptions = {
+  enabled: boolean;
+  checkpoints: readonly SkillApprovalCheckpoint[];
+  decisionInputs: readonly ApprovalDecisionInput[];
+  maxDecisions?: number;
+};
+
 export function createAdaptiveQueuePreview(
   inputs: AdaptiveQueueRuntimeInputs,
   options: AdaptiveQueuePreviewOptions,
@@ -173,6 +186,7 @@ export function createAdaptiveQueuePreview(
       skillSelections: [],
       skillExecutionPlans: [],
       skillApprovalCheckpoints: [],
+      skillApprovalDecisions: [],
       scheduledWorkItemIds: [],
     };
   }
@@ -183,6 +197,7 @@ export function createAdaptiveQueuePreview(
   const skillSelections = mapRuntimeInputsToSkillSelections(inputs);
   const skillExecutionPlans = mapRuntimeInputsToSkillExecutionPlans(inputs);
   const skillApprovalCheckpoints = mapRuntimeInputsToSkillApprovalCheckpoints(inputs);
+  const skillApprovalDecisions = mapRuntimeInputsToSkillApprovalDecisions(inputs, skillApprovalCheckpoints);
   const scheduler = options.scheduler ?? defaultAdaptiveScheduler;
   const scheduledItems = scheduler(workItems, signals).map(cloneWorkItem);
   const maxParallel = Math.max(1, Math.floor(options.maxParallel ?? 1));
@@ -197,6 +212,7 @@ export function createAdaptiveQueuePreview(
     skillSelections,
     skillExecutionPlans,
     skillApprovalCheckpoints,
+    skillApprovalDecisions,
     scheduledWorkItemIds: batch.map(item => item.id),
   };
 }
@@ -286,6 +302,26 @@ export async function captureAdaptivePreviewJournal(
           risk: checkpoint.risk,
           approvalState: checkpoint.approvalState,
           createdSource: checkpoint.createdSource,
+        },
+      })),
+    ...preview.skillApprovalDecisions.map(transition =>
+      createSkillApprovalDecisionJournalRecord({
+        createdAt,
+        source,
+        workItemId: transition.updatedCheckpoint.taskId,
+        decision: {
+          checkpointId: transition.decision.checkpointId,
+          skillName: transition.updatedCheckpoint.skillName,
+          resourceType: transition.updatedCheckpoint.resourceType,
+          decision: transition.decision.decision,
+          reason: transition.decision.reason,
+          decidedBy: transition.decision.decidedBy,
+          decidedAt: transition.decision.decidedAt,
+          transitionResult: transition.transitionResult,
+          ...(transition.transitionReason !== undefined
+            ? { transitionReason: transition.transitionReason }
+            : {}),
+          updatedApprovalState: transition.updatedCheckpoint.approvalState,
         },
       })),
   ];
@@ -494,6 +530,22 @@ export function buildAdaptivePreviewSkillApprovalCheckpoints(
   });
 }
 
+export function buildAdaptivePreviewSkillApprovalDecisions(
+  options: AdaptivePreviewApprovalDecisionOptions,
+): SkillApprovalCheckpointTransition[] {
+  if (!options.enabled) {
+    return [];
+  }
+
+  if (options.decisionInputs.length === 0) {
+    return [];
+  }
+
+  const maxDecisions = Math.max(0, Math.floor(options.maxDecisions ?? 64));
+  const transitions = applyApprovalDecisions(options.checkpoints, options.decisionInputs);
+  return transitions.slice(0, maxDecisions);
+}
+
 export function mapRuntimeInputsToWorkItems(inputs: AdaptiveQueueRuntimeInputs): WorkItem[] {
   const workItems: WorkItem[] = [];
 
@@ -566,6 +618,17 @@ export function mapRuntimeInputsToSkillExecutionPlans(inputs: AdaptiveQueueRunti
 
 export function mapRuntimeInputsToSkillApprovalCheckpoints(inputs: AdaptiveQueueRuntimeInputs): SkillApprovalCheckpoint[] {
   return (inputs.skillApprovalCheckpoints ?? []).map(cloneSkillApprovalCheckpoint);
+}
+
+export function mapRuntimeInputsToSkillApprovalDecisions(
+  inputs: AdaptiveQueueRuntimeInputs,
+  checkpoints: readonly SkillApprovalCheckpoint[],
+): SkillApprovalCheckpointTransition[] {
+  const decisionInputs = inputs.skillApprovalDecisionInputs ?? [];
+  if (decisionInputs.length === 0) {
+    return [];
+  }
+  return applyApprovalDecisions(checkpoints, decisionInputs);
 }
 
 function defaultAdaptiveScheduler(
@@ -827,6 +890,24 @@ function cloneSkillApprovalCheckpoint(checkpoint: SkillApprovalCheckpoint): Skil
     risk: checkpoint.risk,
     approvalState: checkpoint.approvalState,
     createdSource: checkpoint.createdSource,
+  };
+}
+
+function cloneSkillApprovalCheckpointTransition(
+  transition: SkillApprovalCheckpointTransition,
+): SkillApprovalCheckpointTransition {
+  return {
+    originalCheckpoint: cloneSkillApprovalCheckpoint(transition.originalCheckpoint),
+    updatedCheckpoint: cloneSkillApprovalCheckpoint(transition.updatedCheckpoint),
+    decision: {
+      checkpointId: transition.decision.checkpointId,
+      decision: transition.decision.decision,
+      reason: transition.decision.reason,
+      decidedBy: transition.decision.decidedBy,
+      decidedAt: transition.decision.decidedAt,
+    },
+    transitionResult: transition.transitionResult,
+    ...(transition.transitionReason !== undefined ? { transitionReason: transition.transitionReason } : {}),
   };
 }
 
