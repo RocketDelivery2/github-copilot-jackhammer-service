@@ -43,3 +43,29 @@ export type SkillResourcePolicy = {
   requiresHumanApproval: boolean;
   autoExecutable: boolean;
 };
+
+export type SkillExecutionPlanStep = {
+  index: number;
+  summary: string;
+};
+
+export type SkillExecutionPlanTrustPolicySummary = {
+  instructionsReadAllowed: boolean;
+  referencesReadAllowed: boolean;
+  assetsReadAllowed: boolean;
+  scriptsRequireHumanApproval: boolean;
+  scriptsAutoExecutable: boolean;
+  scriptExecutionBlocked: boolean;
+};
+
+export type SkillExecutionPlan = {
+  taskId: string;
+  skillName: string;
+  selectionRank: number;
+  selectionScore: number;
+  selectionReasons: string[];
+  risk: SkillRisk;
+  allowedTools: string[];
+  plannedSteps: SkillExecutionPlanStep[];
+  trustPolicySummary: SkillExecutionPlanTrustPolicySummary;
+};

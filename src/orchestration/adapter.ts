@@ -10,6 +10,7 @@ import {
 import {
   appendEventJournalRecords,
   createExecutionEventJournalRecord,
+  createSkillExecutionPlanJournalRecord,
   createQueueSignalJournalRecord,
   createSkillSelectionJournalRecord,
 } from './event-journal.js';
@@ -17,9 +18,11 @@ import type { ActiveWorkItem, CommandQueueItem, CopilotGuidance, CopilotResult }
 import type { CommandExecutionRequest, CommandExecutionResult } from './command-runner.js';
 import type { EventJournalRecord } from './event-journal.js';
 import type { ExecutionEvent, QueueSignal, WorkItem } from './types.js';
+import { buildSkillExecutionPlan } from '../skills/execution-plan.js';
+import { loadSkillDocumentFromFile } from '../skills/loader.js';
 import { selectSkillsForTask } from '../skills/selector.js';
 import { evaluateSkillResourcePolicy } from '../skills/trust-policy.js';
-import type { SkillMetadataIndex, SkillTaskLike } from '../skills/types.js';
+import type { SkillDocument, SkillExecutionPlan, SkillMetadataIndex, SkillTaskLike } from '../skills/types.js';
 
 export type AdaptiveQueueRuntimeInputs = {
   activeWorkItem?: ActiveWorkItem;
@@ -29,6 +32,7 @@ export type AdaptiveQueueRuntimeInputs = {
   executionEvents?: readonly ExecutionEvent[];
   queueSignals?: readonly QueueSignal[];
   skillSelections?: readonly AdaptivePreviewSkillSelection[];
+  skillExecutionPlans?: readonly SkillExecutionPlan[];
 };
 
 export type AdaptiveScheduler = (
@@ -49,6 +53,7 @@ export type AdaptiveQueuePreview = {
   executionEvents: ExecutionEvent[];
   signals: QueueSignal[];
   skillSelections: AdaptivePreviewSkillSelection[];
+  skillExecutionPlans: SkillExecutionPlan[];
   scheduledWorkItemIds: string[];
 };
 
@@ -129,6 +134,15 @@ export type AdaptivePreviewSkillSelectionOptions = {
   maxMatchesPerTask?: number;
 };
 
+export type AdaptivePreviewSkillExecutionPlanOptions = {
+  enabled: boolean;
+  skillSelections: readonly AdaptivePreviewSkillSelection[];
+  skillIndex: SkillMetadataIndex;
+  maxPlans?: number;
+  maxStepsPerPlan?: number;
+  loadSkillDocument?: (filePath: string) => Promise<SkillDocument>;
+};
+
 export function createAdaptiveQueuePreview(
   inputs: AdaptiveQueueRuntimeInputs,
   options: AdaptiveQueuePreviewOptions,
@@ -141,6 +155,7 @@ export function createAdaptiveQueuePreview(
       executionEvents: [],
       signals: [],
       skillSelections: [],
+      skillExecutionPlans: [],
       scheduledWorkItemIds: [],
     };
   }
@@ -149,6 +164,7 @@ export function createAdaptiveQueuePreview(
   const executionEvents = mapRuntimeInputsToExecutionEvents(inputs);
   const signals = mapRuntimeInputsToQueueSignals(inputs);
   const skillSelections = mapRuntimeInputsToSkillSelections(inputs);
+  const skillExecutionPlans = mapRuntimeInputsToSkillExecutionPlans(inputs);
   const scheduler = options.scheduler ?? defaultAdaptiveScheduler;
   const scheduledItems = scheduler(workItems, signals).map(cloneWorkItem);
   const maxParallel = Math.max(1, Math.floor(options.maxParallel ?? 1));
@@ -161,6 +177,7 @@ export function createAdaptiveQueuePreview(
     executionEvents,
     signals,
     skillSelections,
+    skillExecutionPlans,
     scheduledWorkItemIds: batch.map(item => item.id),
   };
 }
@@ -209,6 +226,30 @@ export async function captureAdaptivePreviewJournal(
             assetsReadAllowed: selection.trustPolicySummary.assetsReadAllowed,
             scriptsRequireHumanApproval: selection.trustPolicySummary.scriptsRequireHumanApproval,
             scriptsAutoExecutable: selection.trustPolicySummary.scriptsAutoExecutable,
+          },
+        },
+      })),
+    ...preview.skillExecutionPlans.map(plan =>
+      createSkillExecutionPlanJournalRecord({
+        createdAt,
+        source,
+        workItemId: plan.taskId,
+        plan: {
+          taskId: plan.taskId,
+          skillName: plan.skillName,
+          selectionRank: plan.selectionRank,
+          selectionScore: plan.selectionScore,
+          selectionReasons: [...plan.selectionReasons],
+          risk: plan.risk,
+          allowedTools: [...plan.allowedTools],
+          plannedSteps: plan.plannedSteps.map(step => ({ index: step.index, summary: step.summary })),
+          trustPolicySummary: {
+            instructionsReadAllowed: plan.trustPolicySummary.instructionsReadAllowed,
+            referencesReadAllowed: plan.trustPolicySummary.referencesReadAllowed,
+            assetsReadAllowed: plan.trustPolicySummary.assetsReadAllowed,
+            scriptsRequireHumanApproval: plan.trustPolicySummary.scriptsRequireHumanApproval,
+            scriptsAutoExecutable: plan.trustPolicySummary.scriptsAutoExecutable,
+            scriptExecutionBlocked: plan.trustPolicySummary.scriptExecutionBlocked,
           },
         },
       })),
@@ -359,6 +400,52 @@ export function selectAdaptivePreviewSkills(
   }));
 }
 
+export async function buildAdaptivePreviewSkillExecutionPlans(
+  options: AdaptivePreviewSkillExecutionPlanOptions,
+): Promise<SkillExecutionPlan[]> {
+  if (!options.enabled) {
+    return [];
+  }
+
+  const maxPlans = Math.max(0, Math.floor(options.maxPlans ?? 8));
+  const maxStepsPerPlan = Math.max(1, Math.floor(options.maxStepsPerPlan ?? 6));
+  if (maxPlans === 0) {
+    return [];
+  }
+
+  const loadDocument = options.loadSkillDocument ?? loadSkillDocumentFromFile;
+  const plans: SkillExecutionPlan[] = [];
+  for (const selection of options.skillSelections.slice(0, maxPlans)) {
+    const metadata = options.skillIndex.skills.find(skill => skill.name === selection.skillName);
+    if (!metadata?.skillPath) {
+      continue;
+    }
+
+    const document = await loadDocument(metadata.skillPath);
+    plans.push(buildSkillExecutionPlan({
+      taskId: selection.taskId,
+      skillName: selection.skillName,
+      selectionRank: selection.rank,
+      selectionScore: selection.score,
+      selectionReasons: selection.reasons,
+      risk: selection.risk,
+      allowedTools: selection.allowedTools,
+      document,
+      maxSteps: maxStepsPerPlan,
+      trustPolicySummary: {
+        instructionsReadAllowed: selection.trustPolicySummary.instructionsReadAllowed,
+        referencesReadAllowed: selection.trustPolicySummary.referencesReadAllowed,
+        assetsReadAllowed: selection.trustPolicySummary.assetsReadAllowed,
+        scriptsRequireHumanApproval: selection.trustPolicySummary.scriptsRequireHumanApproval,
+        scriptsAutoExecutable: selection.trustPolicySummary.scriptsAutoExecutable,
+        scriptExecutionBlocked: true,
+      },
+    }));
+  }
+
+  return plans;
+}
+
 export function mapRuntimeInputsToWorkItems(inputs: AdaptiveQueueRuntimeInputs): WorkItem[] {
   const workItems: WorkItem[] = [];
 
@@ -423,6 +510,10 @@ export function mapRuntimeInputsToExecutionEvents(inputs: AdaptiveQueueRuntimeIn
 
 export function mapRuntimeInputsToSkillSelections(inputs: AdaptiveQueueRuntimeInputs): AdaptivePreviewSkillSelection[] {
   return (inputs.skillSelections ?? []).map(cloneSkillSelection);
+}
+
+export function mapRuntimeInputsToSkillExecutionPlans(inputs: AdaptiveQueueRuntimeInputs): SkillExecutionPlan[] {
+  return (inputs.skillExecutionPlans ?? []).map(cloneSkillExecutionPlan);
 }
 
 function defaultAdaptiveScheduler(
@@ -649,6 +740,27 @@ function cloneSkillSelection(selection: AdaptivePreviewSkillSelection): Adaptive
       assetsReadAllowed: selection.trustPolicySummary.assetsReadAllowed,
       scriptsRequireHumanApproval: selection.trustPolicySummary.scriptsRequireHumanApproval,
       scriptsAutoExecutable: selection.trustPolicySummary.scriptsAutoExecutable,
+    },
+  };
+}
+
+function cloneSkillExecutionPlan(plan: SkillExecutionPlan): SkillExecutionPlan {
+  return {
+    taskId: plan.taskId,
+    skillName: plan.skillName,
+    selectionRank: plan.selectionRank,
+    selectionScore: plan.selectionScore,
+    selectionReasons: [...plan.selectionReasons],
+    risk: plan.risk,
+    allowedTools: [...plan.allowedTools],
+    plannedSteps: plan.plannedSteps.map(step => ({ index: step.index, summary: step.summary })),
+    trustPolicySummary: {
+      instructionsReadAllowed: plan.trustPolicySummary.instructionsReadAllowed,
+      referencesReadAllowed: plan.trustPolicySummary.referencesReadAllowed,
+      assetsReadAllowed: plan.trustPolicySummary.assetsReadAllowed,
+      scriptsRequireHumanApproval: plan.trustPolicySummary.scriptsRequireHumanApproval,
+      scriptsAutoExecutable: plan.trustPolicySummary.scriptsAutoExecutable,
+      scriptExecutionBlocked: plan.trustPolicySummary.scriptExecutionBlocked,
     },
   };
 }
