@@ -12,7 +12,8 @@ export type EventJournalRecordType =
   | 'execution_event'
   | 'queue_signal'
   | 'skill_selection'
-  | 'skill_execution_plan';
+  | 'skill_execution_plan'
+  | 'skill_approval_checkpoint';
 
 export type EventJournalExecutionEventRecord = {
   type: 'execution_event';
@@ -80,11 +81,32 @@ export type EventJournalSkillExecutionPlanRecord = {
   };
 };
 
+export type SkillApprovalResourceType = 'script' | 'reference' | 'instructions' | 'risk_gate';
+export type SkillApprovalState = 'pending' | 'approved' | 'rejected' | 'not_required';
+
+export type EventJournalSkillApprovalCheckpointRecord = {
+  type: 'skill_approval_checkpoint';
+  createdAt: string;
+  source: string;
+  workItemId?: string;
+  checkpoint: {
+    checkpointId: string;
+    taskId: string;
+    skillName: string;
+    resourceType: SkillApprovalResourceType;
+    reason: string;
+    risk: SkillSelectionRisk;
+    approvalState: SkillApprovalState;
+    createdSource: 'adaptive-preview';
+  };
+};
+
 export type EventJournalRecord =
   | EventJournalExecutionEventRecord
   | EventJournalQueueSignalRecord
   | EventJournalSkillSelectionRecord
-  | EventJournalSkillExecutionPlanRecord;
+  | EventJournalSkillExecutionPlanRecord
+  | EventJournalSkillApprovalCheckpointRecord;
 
 export type CreateExecutionEventJournalRecordInput = {
   createdAt: string;
@@ -146,6 +168,22 @@ export type CreateSkillExecutionPlanJournalRecordInput = {
   };
 };
 
+export type CreateSkillApprovalCheckpointJournalRecordInput = {
+  createdAt: string;
+  source: string;
+  workItemId?: string;
+  checkpoint: {
+    checkpointId: string;
+    taskId: string;
+    skillName: string;
+    resourceType: SkillApprovalResourceType;
+    reason: string;
+    risk: SkillSelectionRisk;
+    approvalState: SkillApprovalState;
+    createdSource: 'adaptive-preview';
+  };
+};
+
 export type AppendEventJournalOptions = {
   retentionLimit?: number;
 };
@@ -178,6 +216,18 @@ const QUEUE_SIGNAL_SEVERITIES = new Set<QueueSignalSeverity>([
 ]);
 
 const SKILL_SELECTION_RISKS = new Set<SkillSelectionRisk>(['low', 'medium', 'high']);
+const SKILL_APPROVAL_RESOURCE_TYPES = new Set<SkillApprovalResourceType>([
+  'script',
+  'reference',
+  'instructions',
+  'risk_gate',
+]);
+const SKILL_APPROVAL_STATES = new Set<SkillApprovalState>([
+  'pending',
+  'approved',
+  'rejected',
+  'not_required',
+]);
 
 export async function loadEventJournal(filePath: string): Promise<EventJournalRecord[]> {
   let contents: string;
@@ -314,6 +364,30 @@ export function createSkillExecutionPlanJournalRecord(
   return parseJournalRecord(record, 'event journal input', 0) as EventJournalSkillExecutionPlanRecord;
 }
 
+export function createSkillApprovalCheckpointJournalRecord(
+  input: CreateSkillApprovalCheckpointJournalRecordInput,
+): EventJournalSkillApprovalCheckpointRecord {
+  const workItemId = input.workItemId ?? input.checkpoint.taskId;
+  const record: EventJournalSkillApprovalCheckpointRecord = {
+    type: 'skill_approval_checkpoint',
+    createdAt: input.createdAt,
+    source: input.source,
+    ...(workItemId ? { workItemId } : {}),
+    checkpoint: {
+      checkpointId: input.checkpoint.checkpointId,
+      taskId: input.checkpoint.taskId,
+      skillName: input.checkpoint.skillName,
+      resourceType: input.checkpoint.resourceType,
+      reason: input.checkpoint.reason,
+      risk: input.checkpoint.risk,
+      approvalState: input.checkpoint.approvalState,
+      createdSource: input.checkpoint.createdSource,
+    },
+  };
+
+  return parseJournalRecord(record, 'event journal input', 0) as EventJournalSkillApprovalCheckpointRecord;
+}
+
 export function applyEventJournalRetention(
   records: readonly EventJournalRecord[],
   retentionLimit?: number,
@@ -388,9 +462,19 @@ function parseJournalRecord(
     };
   }
 
+  if (type === 'skill_approval_checkpoint') {
+    return {
+      type,
+      createdAt,
+      source,
+      ...(workItemId ? { workItemId } : {}),
+      checkpoint: parseSkillApprovalCheckpoint(value.checkpoint, filePath, `${context}.checkpoint`),
+    };
+  }
+
   throw malformedJournalError(
     filePath,
-    `${context}.type must be execution_event, queue_signal, skill_selection, or skill_execution_plan`,
+    `${context}.type must be execution_event, queue_signal, skill_selection, skill_execution_plan, or skill_approval_checkpoint`,
   );
 }
 
@@ -585,6 +669,48 @@ function parseSkillExecutionPlan(
   };
 }
 
+function parseSkillApprovalCheckpoint(
+  value: unknown,
+  filePath: string,
+  context: string,
+): EventJournalSkillApprovalCheckpointRecord['checkpoint'] {
+  if (!isRecord(value)) {
+    throw malformedJournalError(filePath, `${context} must be an object`);
+  }
+
+  const checkpointId = requireNonEmptyString(value.checkpointId, filePath, `${context}.checkpointId`);
+  const taskId = requireNonEmptyString(value.taskId, filePath, `${context}.taskId`);
+  const skillName = requireNonEmptyString(value.skillName, filePath, `${context}.skillName`);
+  const resourceType = requireString(value.resourceType, filePath, `${context}.resourceType`);
+  if (!SKILL_APPROVAL_RESOURCE_TYPES.has(resourceType as SkillApprovalResourceType)) {
+    throw malformedJournalError(filePath, `${context}.resourceType is not a known skill approval resource type`);
+  }
+  const reason = requireNonEmptyString(value.reason, filePath, `${context}.reason`);
+  const risk = requireString(value.risk, filePath, `${context}.risk`);
+  if (!SKILL_SELECTION_RISKS.has(risk as SkillSelectionRisk)) {
+    throw malformedJournalError(filePath, `${context}.risk is not a known skill selection risk`);
+  }
+  const approvalState = requireString(value.approvalState, filePath, `${context}.approvalState`);
+  if (!SKILL_APPROVAL_STATES.has(approvalState as SkillApprovalState)) {
+    throw malformedJournalError(filePath, `${context}.approvalState is not a known approval state`);
+  }
+  const createdSource = requireString(value.createdSource, filePath, `${context}.createdSource`);
+  if (createdSource !== 'adaptive-preview') {
+    throw malformedJournalError(filePath, `${context}.createdSource must be adaptive-preview`);
+  }
+
+  return {
+    checkpointId,
+    taskId,
+    skillName,
+    resourceType: resourceType as SkillApprovalResourceType,
+    reason,
+    risk: risk as SkillSelectionRisk,
+    approvalState: approvalState as SkillApprovalState,
+    createdSource: createdSource as 'adaptive-preview',
+  };
+}
+
 function cloneJournalRecord(record: EventJournalRecord): EventJournalRecord {
   if (record.type === 'execution_event') {
     return {
@@ -644,6 +770,25 @@ function cloneJournalRecord(record: EventJournalRecord): EventJournalRecord {
           scriptsAutoExecutable: record.plan.trustPolicySummary.scriptsAutoExecutable,
           scriptExecutionBlocked: record.plan.trustPolicySummary.scriptExecutionBlocked,
         },
+      },
+    };
+  }
+
+  if (record.type === 'skill_approval_checkpoint') {
+    return {
+      type: record.type,
+      createdAt: record.createdAt,
+      source: record.source,
+      ...(record.workItemId ? { workItemId: record.workItemId } : {}),
+      checkpoint: {
+        checkpointId: record.checkpoint.checkpointId,
+        taskId: record.checkpoint.taskId,
+        skillName: record.checkpoint.skillName,
+        resourceType: record.checkpoint.resourceType,
+        reason: record.checkpoint.reason,
+        risk: record.checkpoint.risk,
+        approvalState: record.checkpoint.approvalState,
+        createdSource: record.checkpoint.createdSource,
       },
     };
   }

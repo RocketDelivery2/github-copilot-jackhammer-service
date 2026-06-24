@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import {
+  buildAdaptivePreviewSkillApprovalCheckpoints,
   buildAdaptivePreviewSkillExecutionPlans,
   buildAdaptivePreviewCommandCaptureRequests,
   captureAdaptivePreviewCommandRunnerFeedback,
@@ -608,6 +609,179 @@ keywords: [validation, test, build, lint]
     assert.equal(planRecord.plan.trustPolicySummary.scriptExecutionBlocked, true);
     assert.equal(planRecord.plan.trustPolicySummary.scriptsAutoExecutable, false);
     assert.equal(planRecord.plan.plannedSteps.length, 2);
+  });
+
+  it('disabled/default path produces no approval checkpoints', () => {
+    const checkpoints = buildAdaptivePreviewSkillApprovalCheckpoints({
+      enabled: false,
+      skillExecutionPlans: [],
+    });
+
+    assert.deepEqual(checkpoints, []);
+  });
+
+  it('enabled preview creates deterministic bounded approval checkpoints from execution plans', () => {
+    const plans = [
+      {
+        taskId: 'issue:1',
+        skillName: 'validation',
+        selectionRank: 1,
+        selectionScore: 11,
+        selectionReasons: ['keyword:validation'],
+        risk: 'low' as const,
+        allowedTools: ['npm.cmd'],
+        plannedSteps: [{ index: 1, summary: 'Run npm.cmd test' }],
+        trustPolicySummary: {
+          instructionsReadAllowed: true,
+          referencesReadAllowed: true,
+          assetsReadAllowed: true,
+          scriptsRequireHumanApproval: true,
+          scriptsAutoExecutable: false,
+          scriptExecutionBlocked: true,
+        },
+      },
+      {
+        taskId: 'issue:2',
+        skillName: 'typescript-patch',
+        selectionRank: 2,
+        selectionScore: 9,
+        selectionReasons: ['keyword:patch'],
+        risk: 'high' as const,
+        allowedTools: ['apply_patch'],
+        plannedSteps: [{ index: 1, summary: 'Inspect symbols' }],
+        trustPolicySummary: {
+          instructionsReadAllowed: true,
+          referencesReadAllowed: true,
+          assetsReadAllowed: true,
+          scriptsRequireHumanApproval: true,
+          scriptsAutoExecutable: false,
+          scriptExecutionBlocked: true,
+        },
+      },
+    ];
+
+    const first = buildAdaptivePreviewSkillApprovalCheckpoints({
+      enabled: true,
+      skillExecutionPlans: plans,
+      maxCheckpoints: 3,
+    });
+    const second = buildAdaptivePreviewSkillApprovalCheckpoints({
+      enabled: true,
+      skillExecutionPlans: plans,
+      maxCheckpoints: 3,
+    });
+
+    assert.deepEqual(first, second);
+    assert.equal(first.length, 3);
+  });
+
+  it('script-capable checkpoints require approval and remain non-executable by default', () => {
+    const checkpoints = buildAdaptivePreviewSkillApprovalCheckpoints({
+      enabled: true,
+      skillExecutionPlans: [{
+        taskId: 'issue:3',
+        skillName: 'error-recovery',
+        selectionRank: 1,
+        selectionScore: 8,
+        selectionReasons: ['keyword:error'],
+        risk: 'medium',
+        allowedTools: ['powershell'],
+        plannedSteps: [{ index: 1, summary: 'Classify command error' }],
+        trustPolicySummary: {
+          instructionsReadAllowed: true,
+          referencesReadAllowed: true,
+          assetsReadAllowed: true,
+          scriptsRequireHumanApproval: true,
+          scriptsAutoExecutable: false,
+          scriptExecutionBlocked: true,
+        },
+      }],
+    });
+
+    const scriptCheckpoint = checkpoints.find(entry => entry.resourceType === 'script');
+    assert.ok(scriptCheckpoint);
+    assert.equal(scriptCheckpoint?.approvalState, 'pending');
+  });
+
+  it('markdown/reference-only resources do not require execution approval', () => {
+    const checkpoints = buildAdaptivePreviewSkillApprovalCheckpoints({
+      enabled: true,
+      skillExecutionPlans: [{
+        taskId: 'issue:4',
+        skillName: 'repo-inspection',
+        selectionRank: 1,
+        selectionScore: 7,
+        selectionReasons: ['keyword:repository'],
+        risk: 'low',
+        allowedTools: ['view'],
+        plannedSteps: [{ index: 1, summary: 'Inspect bounded line ranges' }],
+        trustPolicySummary: {
+          instructionsReadAllowed: true,
+          referencesReadAllowed: true,
+          assetsReadAllowed: true,
+          scriptsRequireHumanApproval: false,
+          scriptsAutoExecutable: false,
+          scriptExecutionBlocked: true,
+        },
+      }],
+    });
+
+    const scriptCheckpoint = checkpoints.find(entry => entry.resourceType === 'script');
+    assert.ok(scriptCheckpoint);
+    assert.equal(scriptCheckpoint?.approvalState, 'not_required');
+  });
+
+  it('captures preview approval checkpoints as deterministic journal records', async () => {
+    const checkpoints = buildAdaptivePreviewSkillApprovalCheckpoints({
+      enabled: true,
+      skillExecutionPlans: [{
+        taskId: 'issue:5',
+        skillName: 'validation',
+        selectionRank: 1,
+        selectionScore: 10,
+        selectionReasons: ['keyword:validation'],
+        risk: 'high',
+        allowedTools: ['npm.cmd'],
+        plannedSteps: [{ index: 1, summary: 'Run npm.cmd test' }],
+        trustPolicySummary: {
+          instructionsReadAllowed: true,
+          referencesReadAllowed: true,
+          assetsReadAllowed: true,
+          scriptsRequireHumanApproval: true,
+          scriptsAutoExecutable: false,
+          scriptExecutionBlocked: true,
+        },
+      }],
+      maxCheckpoints: 4,
+    });
+
+    const preview = createAdaptiveQueuePreview({
+      ...runtimeInputs,
+      skillApprovalCheckpoints: checkpoints,
+    }, { enabled: true });
+    const appended: EventJournalRecord[] = [];
+
+    await captureAdaptivePreviewJournal(preview, {
+      enabled: true,
+      journalPath: 'ignored.json',
+      appendRecords: async (_filePath, records) => {
+        appended.push(...records);
+        return [...records];
+      },
+      now: () => '2026-06-20T12:17:00.000Z',
+      source: 'adapter-test',
+    });
+
+    const checkpointRecord = appended.find(
+      (record): record is Extract<EventJournalRecord, { type: 'skill_approval_checkpoint' }> =>
+        record.type === 'skill_approval_checkpoint' && record.checkpoint.resourceType === 'script',
+    );
+    assert.ok(checkpointRecord);
+    if (!checkpointRecord) {
+      throw new Error('Expected a skill_approval_checkpoint record to be appended.');
+    }
+    assert.equal(checkpointRecord.checkpoint.resourceType, 'script');
+    assert.equal(checkpointRecord.checkpoint.approvalState, 'pending');
   });
 
   it('writes preview execution events to the journal when adaptive preview is enabled', async () => {

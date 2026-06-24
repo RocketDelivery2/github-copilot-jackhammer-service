@@ -8,6 +8,7 @@ import {
   appendEventJournalRecords,
   applyEventJournalRetention,
   createExecutionEventJournalRecord,
+  createSkillApprovalCheckpointJournalRecord,
   createSkillExecutionPlanJournalRecord,
   createQueueSignalJournalRecord,
   createSkillSelectionJournalRecord,
@@ -120,6 +121,30 @@ describe('event journal', () => {
 
     assert.deepEqual(saved, [executionPlan]);
     assert.deepEqual(loaded, [executionPlan]);
+  });
+
+  it('appends preview skill approval checkpoint records', async () => {
+    const journalPath = await createJournalPath('skill-approval-checkpoint');
+    const checkpoint = createSkillApprovalCheckpointJournalRecord({
+      createdAt: firstCreatedAt,
+      source: 'adaptive-preview',
+      checkpoint: {
+        checkpointId: 'script:issue:42:validation',
+        taskId: 'issue:42',
+        skillName: 'validation',
+        resourceType: 'script',
+        reason: 'Script-capable resources require explicit human approval in preview.',
+        risk: 'low',
+        approvalState: 'pending',
+        createdSource: 'adaptive-preview',
+      },
+    });
+
+    const saved = await appendEventJournalRecords(journalPath, [checkpoint]);
+    const loaded = await loadEventJournal(journalPath);
+
+    assert.deepEqual(saved, [checkpoint]);
+    assert.deepEqual(loaded, [checkpoint]);
   });
 
   it('preserves existing journal entries when appending', async () => {
