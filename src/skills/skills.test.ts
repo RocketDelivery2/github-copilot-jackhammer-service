@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import { parseSkillDocument, parseSkillMetadata } from './loader.js';
 import { createSkillMetadataIndex } from './registry.js';
 import { selectSkillsForTask } from './selector.js';
+import { buildSkillApprovalCheckpoints } from './approval-checkpoint.js';
 import { evaluateSkillResourcePolicy, isSkillResourceExecutionAllowed } from './trust-policy.js';
 
 async function readSkillMarkdown(skillName: string): Promise<string> {
@@ -154,5 +155,34 @@ describe('no production scheduling behavior changes', () => {
     ]);
 
     assert.deepEqual(left.skills.map(skill => skill.name), right.skills.map(skill => skill.name));
+  });
+});
+
+describe('approval checkpoint model', () => {
+  it('creates deterministic approval checkpoints from execution plans', () => {
+    const plans = [{
+      taskId: 'issue:1',
+      skillName: 'validation',
+      selectionRank: 1,
+      selectionScore: 8,
+      selectionReasons: ['keyword:validation'],
+      risk: 'high' as const,
+      allowedTools: ['npm.cmd'],
+      plannedSteps: [{ index: 1, summary: 'Run npm.cmd test' }],
+      trustPolicySummary: {
+        instructionsReadAllowed: true,
+        referencesReadAllowed: true,
+        assetsReadAllowed: true,
+        scriptsRequireHumanApproval: true,
+        scriptsAutoExecutable: false,
+        scriptExecutionBlocked: true,
+      },
+    }];
+
+    const first = buildSkillApprovalCheckpoints({ plans, maxCheckpoints: 8 });
+    const second = buildSkillApprovalCheckpoints({ plans, maxCheckpoints: 8 });
+    assert.deepEqual(first, second);
+    assert.ok(first.some(entry => entry.resourceType === 'script' && entry.approvalState === 'pending'));
+    assert.ok(first.some(entry => entry.resourceType === 'risk_gate' && entry.approvalState === 'pending'));
   });
 });

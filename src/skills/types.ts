@@ -69,3 +69,18 @@ export type SkillExecutionPlan = {
   plannedSteps: SkillExecutionPlanStep[];
   trustPolicySummary: SkillExecutionPlanTrustPolicySummary;
 };
+
+export type SkillApprovalState = 'pending' | 'approved' | 'rejected' | 'not_required';
+
+export type SkillApprovalResourceType = 'script' | 'reference' | 'instructions' | 'risk_gate';
+
+export type SkillApprovalCheckpoint = {
+  checkpointId: string;
+  taskId: string;
+  skillName: string;
+  resourceType: SkillApprovalResourceType;
+  reason: string;
+  risk: SkillRisk;
+  approvalState: SkillApprovalState;
+  createdSource: 'adaptive-preview';
+};

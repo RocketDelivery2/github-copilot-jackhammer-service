@@ -84,13 +84,13 @@ This is **model-only**:
 - no new runtime dependencies
 - no secrets/auth/deployment changes
 
-> Update (preview-only): adaptive preview journaling now records **skill-selection metadata** and **dry-run skill execution plans** (planned step summaries, selection reason/rank, trust-policy decisions) when `ADAPTIVE_QUEUE_ENABLED=true`. Script execution remains blocked: no skill scripts are loaded or executed.
+> Update (preview-only): adaptive preview journaling now records **skill-selection metadata**, **dry-run skill execution plans**, and **human-approval checkpoints** (script/risk-gate approval state) when `ADAPTIVE_QUEUE_ENABLED=true`. Script execution remains blocked: no skill scripts are loaded or executed.
 
 ## Future Wiring (Recommended)
 
 Next PRs can wire this into preview-only flows:
 
 1. Feed metadata index + deterministic selector into ChatOps bridge planning.
-2. Persist selected skill names into adaptive preview journals.
-3. Add explicit human-approval checkpoints before any script execution path.
-4. Integrate skill selection with adaptive queue preview without affecting production scheduling.
+2. Wire checkpoint state transitions (`pending` → `approved`/`rejected`) into an explicit human-in-the-loop preview UX.
+3. Integrate skill selection and dry-run planning with adaptive queue preview without affecting production scheduling.
+4. Add an explicit, separately gated execution bridge only after approval checkpoints are approved.

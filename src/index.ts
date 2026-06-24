@@ -19,6 +19,7 @@ import { extractCopilotGuidance, rebalanceQueue, detectCopilotQuestion } from '.
 import type { ActiveWorkItem, CommandQueueItem, CopilotResult, QueueState } from './types.js';
 import { applyIndustryStandardsPriority } from './standards.js';
 import {
+  buildAdaptivePreviewSkillApprovalCheckpoints,
   buildAdaptivePreviewSkillExecutionPlans,
   buildAdaptivePreviewCommandCaptureRequests,
   captureAdaptivePreviewCommandRunnerFeedback,
@@ -394,6 +395,11 @@ async function runOnce(): Promise<void> {
       maxPlans: 8,
       maxStepsPerPlan: 6,
     });
+    const skillApprovalCheckpoints = buildAdaptivePreviewSkillApprovalCheckpoints({
+      enabled: true,
+      skillExecutionPlans,
+      maxCheckpoints: 16,
+    });
     const adaptivePreview = createAdaptiveQueuePreview({
       activeWorkItem: state.activeWorkItem,
       commandQueue: state.commandQueue,
@@ -403,6 +409,7 @@ async function runOnce(): Promise<void> {
       queueSignals: previewCapture.queueSignals,
       skillSelections,
       skillExecutionPlans,
+      skillApprovalCheckpoints,
     }, { enabled: true });
     const journalRecords = await captureAdaptivePreviewJournal(adaptivePreview, {
       enabled: true,
@@ -420,6 +427,9 @@ async function runOnce(): Promise<void> {
     }
     if (skillExecutionPlans.length > 0) {
       console.log(`Adaptive queue preview generated ${skillExecutionPlans.length} dry-run skill execution plan(s).`);
+    }
+    if (skillApprovalCheckpoints.length > 0) {
+      console.log(`Adaptive queue preview generated ${skillApprovalCheckpoints.length} approval checkpoint(s).`);
     }
     console.log(`Adaptive queue preview planned ${adaptivePreview.scheduledWorkItemIds.length} item(s); existing scheduling flow remains active.`);
   }
