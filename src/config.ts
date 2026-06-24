@@ -37,6 +37,7 @@ const ConfigSchema = z.object({
   ADAPTIVE_PREVIEW_CAPTURE_SOURCE: z.enum(['none', 'recent-results', 'validation-probes']).default('recent-results'),
   ADAPTIVE_PREVIEW_CAPTURE_LIMIT: z.coerce.number().int().nonnegative().max(20).default(3),
   ADAPTIVE_PREVIEW_VALIDATION_PROBES: z.string().default(''),
+  ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE: z.string().default(''),
   RUN_ONCE: boolish.default(''),
 });
 

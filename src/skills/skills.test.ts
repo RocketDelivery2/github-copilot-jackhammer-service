@@ -7,6 +7,7 @@ import { createSkillMetadataIndex } from './registry.js';
 import { selectSkillsForTask } from './selector.js';
 import { buildSkillApprovalCheckpoints } from './approval-checkpoint.js';
 import { applyApprovalDecision, applyApprovalDecisions } from './approval-decision.js';
+import { parseDecisionInputs } from './decision-input-source.js';
 import { evaluateSkillResourcePolicy, isSkillResourceExecutionAllowed } from './trust-policy.js';
 
 async function readSkillMarkdown(skillName: string): Promise<string> {
@@ -337,5 +338,114 @@ describe('approval decision model', () => {
 
     assert.deepEqual(t1, t2);
     assert.equal(baseCheckpoint.approvalState, 'pending');
+  });
+});
+
+describe('approval decision input source', () => {
+  it('empty array returns empty result', () => {
+    const result = parseDecisionInputs([]);
+    assert.deepEqual(result.inputs, []);
+    assert.deepEqual(result.invalid, []);
+  });
+
+  it('valid input parses correctly', () => {
+    const result = parseDecisionInputs([{
+      checkpointId: 'script:issue:1:validation',
+      decision: 'approve',
+      reason: 'Approved for preview.',
+      decidedBy: 'human-preview',
+      decidedAt: '2026-06-23T21:00:00.000Z',
+    }]);
+
+    assert.equal(result.inputs.length, 1);
+    assert.equal(result.invalid.length, 0);
+    assert.equal(result.inputs[0].checkpointId, 'script:issue:1:validation');
+    assert.equal(result.inputs[0].decision, 'approve');
+    assert.equal(result.inputs[0].decidedBy, 'human-preview');
+  });
+
+  it('non-object entry is invalid', () => {
+    const result = parseDecisionInputs([42, 'not-an-object', null]);
+    assert.equal(result.inputs.length, 0);
+    assert.equal(result.invalid.length, 3);
+  });
+
+  it('missing required field produces invalid entry', () => {
+    const result = parseDecisionInputs([{
+      checkpointId: 'script:issue:1:validation',
+      decision: 'approve',
+    }]);
+    assert.equal(result.inputs.length, 0);
+    assert.equal(result.invalid.length, 1);
+    assert.ok(result.invalid[0].reason.includes('reason'));
+  });
+
+  it('invalid decision kind is rejected', () => {
+    const result = parseDecisionInputs([{
+      checkpointId: 'script:issue:1:validation',
+      decision: 'explode',
+      reason: 'test',
+      decidedBy: 'human',
+      decidedAt: '2026-06-23T21:00:00.000Z',
+    }]);
+    assert.equal(result.inputs.length, 0);
+    assert.equal(result.invalid.length, 1);
+    assert.ok(result.invalid[0].reason.includes('approve, reject, reset'));
+  });
+
+  it('invalid timestamp is rejected', () => {
+    const result = parseDecisionInputs([{
+      checkpointId: 'script:issue:1:validation',
+      decision: 'approve',
+      reason: 'test',
+      decidedBy: 'human',
+      decidedAt: 'not-a-date',
+    }]);
+    assert.equal(result.inputs.length, 0);
+    assert.equal(result.invalid.length, 1);
+    assert.ok(result.invalid[0].reason.includes('timestamp'));
+  });
+
+  it('non-array root throws', () => {
+    assert.throws(() => parseDecisionInputs({ not: 'an array' }), /must be a JSON array/);
+    assert.throws(() => parseDecisionInputs('string'), /must be a JSON array/);
+    assert.throws(() => parseDecisionInputs(null), /must be a JSON array/);
+  });
+
+  it('valid and invalid entries are separated deterministically', () => {
+    const result = parseDecisionInputs([
+      {
+        checkpointId: 'script:issue:1:validation',
+        decision: 'approve',
+        reason: 'Approved.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:00:00.000Z',
+      },
+      { bad: 'entry' },
+      {
+        checkpointId: 'risk:issue:2:typescript-patch',
+        decision: 'reject',
+        reason: 'Too risky.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:01:00.000Z',
+      },
+    ]);
+    assert.equal(result.inputs.length, 2);
+    assert.equal(result.invalid.length, 1);
+    assert.equal(result.inputs[0].decision, 'approve');
+    assert.equal(result.inputs[1].decision, 'reject');
+  });
+
+  it('all three valid decision kinds parse without error', () => {
+    const base = {
+      checkpointId: 'x:issue:1:validation',
+      reason: 'test',
+      decidedBy: 'human',
+      decidedAt: '2026-06-23T21:00:00.000Z',
+    };
+    for (const decision of ['approve', 'reject', 'reset'] as const) {
+      const result = parseDecisionInputs([{ ...base, decision }]);
+      assert.equal(result.inputs.length, 1, `Expected decision "${decision}" to be valid`);
+    }
   });
 });

@@ -1,4 +1,5 @@
 ﻿import process from 'node:process';
+import { readFile } from 'node:fs/promises';
 import { planRunnableBatch } from './parallelism.js';
 import { rebalanceWorkItems } from './rebalance.js';
 import { classifyExecutionSignals } from './signals.js';
@@ -22,6 +23,7 @@ import type { EventJournalRecord } from './event-journal.js';
 import type { ExecutionEvent, QueueSignal, WorkItem } from './types.js';
 import { buildSkillApprovalCheckpoints } from '../skills/approval-checkpoint.js';
 import { applyApprovalDecisions } from '../skills/approval-decision.js';
+import { parseDecisionInputs } from '../skills/decision-input-source.js';
 import { buildSkillExecutionPlan } from '../skills/execution-plan.js';
 import { loadSkillDocumentFromFile } from '../skills/loader.js';
 import { selectSkillsForTask } from '../skills/selector.js';
@@ -170,6 +172,12 @@ export type AdaptivePreviewApprovalDecisionOptions = {
   checkpoints: readonly SkillApprovalCheckpoint[];
   decisionInputs: readonly ApprovalDecisionInput[];
   maxDecisions?: number;
+};
+
+export type AdaptivePreviewDecisionInputSourceOptions = {
+  enabled: boolean;
+  filePath?: string;
+  loadFile?: (path: string) => Promise<string>;
 };
 
 export function createAdaptiveQueuePreview(
@@ -544,6 +552,38 @@ export function buildAdaptivePreviewSkillApprovalDecisions(
   const maxDecisions = Math.max(0, Math.floor(options.maxDecisions ?? 64));
   const transitions = applyApprovalDecisions(options.checkpoints, options.decisionInputs);
   return transitions.slice(0, maxDecisions);
+}
+
+export async function loadAdaptivePreviewDecisionInputs(
+  options: AdaptivePreviewDecisionInputSourceOptions,
+): Promise<ApprovalDecisionInput[]> {
+  if (!options.enabled || !options.filePath || options.filePath.trim().length === 0) {
+    return [];
+  }
+
+  const load = options.loadFile ?? ((fp: string) => readFile(fp, 'utf8'));
+
+  let contents: string;
+  try {
+    contents = await load(options.filePath);
+  } catch (error) {
+    if (isEnoent(error)) {
+      return [];
+    }
+    throw error;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents);
+  } catch {
+    throw new Error(
+      `Malformed adaptive preview decision inputs file "${options.filePath}": invalid JSON.`,
+    );
+  }
+
+  const result = parseDecisionInputs(parsed);
+  return result.inputs;
 }
 
 export function mapRuntimeInputsToWorkItems(inputs: AdaptiveQueueRuntimeInputs): WorkItem[] {
@@ -922,4 +962,8 @@ function normalizeSkillBasePath(skillPath: string | undefined, skillName: string
     return normalized.slice(0, -suffix.length);
   }
   return normalized;
+}
+
+function isEnoent(error: unknown): boolean {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
