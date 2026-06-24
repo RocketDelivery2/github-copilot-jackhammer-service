@@ -9,6 +9,7 @@ import {
   applyEventJournalRetention,
   createExecutionEventJournalRecord,
   createSkillApprovalCheckpointJournalRecord,
+  createSkillApprovalDecisionJournalRecord,
   createSkillExecutionPlanJournalRecord,
   createQueueSignalJournalRecord,
   createSkillSelectionJournalRecord,
@@ -145,6 +146,57 @@ describe('event journal', () => {
 
     assert.deepEqual(saved, [checkpoint]);
     assert.deepEqual(loaded, [checkpoint]);
+  });
+
+  it('appends preview skill approval decision records', async () => {
+    const journalPath = await createJournalPath('skill-approval-decision');
+    const decisionRecord = createSkillApprovalDecisionJournalRecord({
+      createdAt: firstCreatedAt,
+      source: 'adaptive-preview',
+      decision: {
+        checkpointId: 'script:issue:42:validation',
+        skillName: 'validation',
+        resourceType: 'script',
+        decision: 'approve',
+        reason: 'Approved for this preview run.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:00:00.000Z',
+        transitionResult: 'applied',
+        updatedApprovalState: 'approved',
+      },
+    });
+
+    const saved = await appendEventJournalRecords(journalPath, [decisionRecord]);
+    const loaded = await loadEventJournal(journalPath);
+
+    assert.deepEqual(saved, [decisionRecord]);
+    assert.deepEqual(loaded, [decisionRecord]);
+  });
+
+  it('appends skill approval decision record with ignored transition reason', async () => {
+    const journalPath = await createJournalPath('skill-approval-decision-ignored');
+    const decisionRecord = createSkillApprovalDecisionJournalRecord({
+      createdAt: firstCreatedAt,
+      source: 'adaptive-preview',
+      decision: {
+        checkpointId: 'script:issue:43:validation',
+        skillName: 'validation',
+        resourceType: 'script',
+        decision: 'approve',
+        reason: 'Second attempt.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:01:00.000Z',
+        transitionResult: 'ignored',
+        transitionReason: 'Checkpoint is already resolved; reset before re-deciding.',
+        updatedApprovalState: 'approved',
+      },
+    });
+
+    const saved = await appendEventJournalRecords(journalPath, [decisionRecord]);
+    const loaded = await loadEventJournal(journalPath);
+
+    assert.deepEqual(saved, [decisionRecord]);
+    assert.deepEqual(loaded, [decisionRecord]);
   });
 
   it('preserves existing journal entries when appending', async () => {

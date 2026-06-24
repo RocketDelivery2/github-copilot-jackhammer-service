@@ -6,6 +6,7 @@ import { parseSkillDocument, parseSkillMetadata } from './loader.js';
 import { createSkillMetadataIndex } from './registry.js';
 import { selectSkillsForTask } from './selector.js';
 import { buildSkillApprovalCheckpoints } from './approval-checkpoint.js';
+import { applyApprovalDecision, applyApprovalDecisions } from './approval-decision.js';
 import { evaluateSkillResourcePolicy, isSkillResourceExecutionAllowed } from './trust-policy.js';
 
 async function readSkillMarkdown(skillName: string): Promise<string> {
@@ -184,5 +185,157 @@ describe('approval checkpoint model', () => {
     assert.deepEqual(first, second);
     assert.ok(first.some(entry => entry.resourceType === 'script' && entry.approvalState === 'pending'));
     assert.ok(first.some(entry => entry.resourceType === 'risk_gate' && entry.approvalState === 'pending'));
+  });
+});
+
+describe('approval decision model', () => {
+  const baseCheckpoint = {
+    checkpointId: 'script:issue:1:validation',
+    taskId: 'issue:1',
+    skillName: 'validation',
+    resourceType: 'script' as const,
+    reason: 'Script requires approval.',
+    risk: 'high' as const,
+    approvalState: 'pending' as const,
+    createdSource: 'adaptive-preview' as const,
+  };
+
+  const baseInput = {
+    checkpointId: 'script:issue:1:validation',
+    reason: 'Approved for preview.',
+    decidedBy: 'human-preview',
+    decidedAt: '2026-06-23T21:00:00.000Z',
+  };
+
+  it('pending checkpoint can be approved deterministically', () => {
+    const t1 = applyApprovalDecision(baseCheckpoint, { ...baseInput, decision: 'approve' });
+    const t2 = applyApprovalDecision(baseCheckpoint, { ...baseInput, decision: 'approve' });
+
+    assert.deepEqual(t1, t2);
+    assert.equal(t1.transitionResult, 'applied');
+    assert.equal(t1.updatedCheckpoint.approvalState, 'approved');
+    assert.equal(t1.originalCheckpoint.approvalState, 'pending');
+  });
+
+  it('pending checkpoint can be rejected deterministically', () => {
+    const transition = applyApprovalDecision(baseCheckpoint, { ...baseInput, decision: 'reject' });
+
+    assert.equal(transition.transitionResult, 'applied');
+    assert.equal(transition.updatedCheckpoint.approvalState, 'rejected');
+  });
+
+  it('reset transitions back to pending deterministically', () => {
+    const approved = { ...baseCheckpoint, approvalState: 'approved' as const };
+    const transition = applyApprovalDecision(approved, { ...baseInput, decision: 'reset' });
+
+    assert.equal(transition.transitionResult, 'applied');
+    assert.equal(transition.updatedCheckpoint.approvalState, 'pending');
+  });
+
+  it('already approved checkpoint cannot be approved again', () => {
+    const approved = { ...baseCheckpoint, approvalState: 'approved' as const };
+    const transition = applyApprovalDecision(approved, { ...baseInput, decision: 'approve' });
+
+    assert.equal(transition.transitionResult, 'ignored');
+    assert.equal(transition.updatedCheckpoint.approvalState, 'approved');
+    assert.ok(transition.transitionReason?.includes('already resolved'));
+  });
+
+  it('already rejected checkpoint cannot be rejected again', () => {
+    const rejected = { ...baseCheckpoint, approvalState: 'rejected' as const };
+    const transition = applyApprovalDecision(rejected, { ...baseInput, decision: 'reject' });
+
+    assert.equal(transition.transitionResult, 'ignored');
+    assert.ok(transition.transitionReason?.includes('already resolved'));
+  });
+
+  it('not_required checkpoint cannot be approved or rejected', () => {
+    const notRequired = { ...baseCheckpoint, approvalState: 'not_required' as const };
+
+    const approveT = applyApprovalDecision(notRequired, { ...baseInput, decision: 'approve' });
+    assert.equal(approveT.transitionResult, 'ignored');
+    assert.ok(approveT.transitionReason?.includes('does not require approval'));
+
+    const rejectT = applyApprovalDecision(notRequired, { ...baseInput, decision: 'reject' });
+    assert.equal(rejectT.transitionResult, 'ignored');
+  });
+
+  it('not_required checkpoint cannot be reset', () => {
+    const notRequired = { ...baseCheckpoint, approvalState: 'not_required' as const };
+    const transition = applyApprovalDecision(notRequired, { ...baseInput, decision: 'reset' });
+
+    assert.equal(transition.transitionResult, 'ignored');
+    assert.ok(transition.transitionReason?.includes('cannot be reset'));
+  });
+
+  it('rejected checkpoint remains non-executable', () => {
+    const transition = applyApprovalDecision(baseCheckpoint, { ...baseInput, decision: 'reject' });
+
+    assert.equal(transition.transitionResult, 'applied');
+    assert.equal(transition.updatedCheckpoint.approvalState, 'rejected');
+    assert.notEqual(transition.updatedCheckpoint.approvalState, 'approved');
+  });
+
+  it('approved checkpoint only changes approval metadata, no execution side effects', () => {
+    const transition = applyApprovalDecision(baseCheckpoint, { ...baseInput, decision: 'approve' });
+
+    assert.equal(transition.transitionResult, 'applied');
+    assert.equal(transition.updatedCheckpoint.approvalState, 'approved');
+    assert.equal(transition.updatedCheckpoint.skillName, baseCheckpoint.skillName);
+    assert.equal(transition.updatedCheckpoint.checkpointId, baseCheckpoint.checkpointId);
+    assert.equal(Object.prototype.hasOwnProperty.call(transition.updatedCheckpoint, 'autoExecutable'), false);
+  });
+
+  it('checkpoint ID mismatch produces invalid transition', () => {
+    const transition = applyApprovalDecision(baseCheckpoint, {
+      ...baseInput,
+      checkpointId: 'wrong:id',
+      decision: 'approve',
+    });
+
+    assert.equal(transition.transitionResult, 'invalid');
+    assert.ok(transition.transitionReason?.includes('mismatch'));
+  });
+
+  it('unknown decision kind produces invalid transition', () => {
+    const transition = applyApprovalDecision(baseCheckpoint, {
+      ...baseInput,
+      decision: 'unknown-kind' as 'approve',
+    });
+
+    assert.equal(transition.transitionResult, 'invalid');
+    assert.ok(transition.transitionReason?.includes('Unknown decision kind'));
+  });
+
+  it('applyApprovalDecisions handles unknown checkpoint ID as invalid', () => {
+    const transitions = applyApprovalDecisions([], [{
+      ...baseInput,
+      decision: 'approve',
+    }]);
+
+    assert.equal(transitions.length, 1);
+    assert.equal(transitions[0].transitionResult, 'invalid');
+    assert.ok(transitions[0].transitionReason?.includes('No checkpoint'));
+  });
+
+  it('batch decisions apply state transitions sequentially', () => {
+    const checkpoints = [baseCheckpoint];
+    const transitions = applyApprovalDecisions(checkpoints, [
+      { ...baseInput, decision: 'approve' },
+      { ...baseInput, decision: 'approve', reason: 'second attempt' },
+    ]);
+
+    assert.equal(transitions.length, 2);
+    assert.equal(transitions[0].transitionResult, 'applied');
+    assert.equal(transitions[1].transitionResult, 'ignored');
+  });
+
+  it('no production scheduling behavior changes', () => {
+    const checkpoints = [baseCheckpoint];
+    const t1 = applyApprovalDecisions(checkpoints, [{ ...baseInput, decision: 'approve' }]);
+    const t2 = applyApprovalDecisions(checkpoints, [{ ...baseInput, decision: 'approve' }]);
+
+    assert.deepEqual(t1, t2);
+    assert.equal(baseCheckpoint.approvalState, 'pending');
   });
 });

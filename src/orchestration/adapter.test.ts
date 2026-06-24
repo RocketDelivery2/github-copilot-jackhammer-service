@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import {
   buildAdaptivePreviewSkillApprovalCheckpoints,
+  buildAdaptivePreviewSkillApprovalDecisions,
   buildAdaptivePreviewSkillExecutionPlans,
   buildAdaptivePreviewCommandCaptureRequests,
   captureAdaptivePreviewCommandRunnerFeedback,
@@ -987,6 +988,159 @@ keywords: [validation, test, build, lint]
 
     assert.deepEqual(events.map(event => event.kind), ['started', 'stderr', 'exit', 'failed']);
     assert.ok(signals.some(signal => signal.kind === 'test_failure'));
+  });
+
+  it('disabled/default path produces no approval decisions', () => {
+    const decisions = buildAdaptivePreviewSkillApprovalDecisions({
+      enabled: false,
+      checkpoints: [],
+      decisionInputs: [],
+    });
+
+    assert.deepEqual(decisions, []);
+  });
+
+  it('enabled path with empty decision inputs returns no decisions', () => {
+    const decisions = buildAdaptivePreviewSkillApprovalDecisions({
+      enabled: true,
+      checkpoints: [],
+      decisionInputs: [],
+    });
+
+    assert.deepEqual(decisions, []);
+  });
+
+  it('approve pending checkpoint transitions to approved', () => {
+    const checkpoint = {
+      checkpointId: 'script:issue:1:validation',
+      taskId: 'issue:1',
+      skillName: 'validation',
+      resourceType: 'script' as const,
+      reason: 'Script requires approval.',
+      risk: 'high' as const,
+      approvalState: 'pending' as const,
+      createdSource: 'adaptive-preview' as const,
+    };
+
+    const decisions = buildAdaptivePreviewSkillApprovalDecisions({
+      enabled: true,
+      checkpoints: [checkpoint],
+      decisionInputs: [{
+        checkpointId: 'script:issue:1:validation',
+        decision: 'approve',
+        reason: 'Approved for preview run.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:00:00.000Z',
+      }],
+    });
+
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].transitionResult, 'applied');
+    assert.equal(decisions[0].updatedCheckpoint.approvalState, 'approved');
+  });
+
+  it('reject pending checkpoint transitions to rejected and remains non-executable', () => {
+    const checkpoint = {
+      checkpointId: 'risk:issue:2:typescript-patch',
+      taskId: 'issue:2',
+      skillName: 'typescript-patch',
+      resourceType: 'risk_gate' as const,
+      reason: 'High risk.',
+      risk: 'high' as const,
+      approvalState: 'pending' as const,
+      createdSource: 'adaptive-preview' as const,
+    };
+
+    const decisions = buildAdaptivePreviewSkillApprovalDecisions({
+      enabled: true,
+      checkpoints: [checkpoint],
+      decisionInputs: [{
+        checkpointId: 'risk:issue:2:typescript-patch',
+        decision: 'reject',
+        reason: 'Too risky for this preview cycle.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:01:00.000Z',
+      }],
+    });
+
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].transitionResult, 'applied');
+    assert.equal(decisions[0].updatedCheckpoint.approvalState, 'rejected');
+    assert.notEqual(decisions[0].updatedCheckpoint.approvalState, 'approved');
+  });
+
+  it('already resolved checkpoint re-decision is deterministically ignored', () => {
+    const approved = {
+      checkpointId: 'script:issue:3:validation',
+      taskId: 'issue:3',
+      skillName: 'validation',
+      resourceType: 'script' as const,
+      reason: 'Script requires approval.',
+      risk: 'low' as const,
+      approvalState: 'approved' as const,
+      createdSource: 'adaptive-preview' as const,
+    };
+
+    const decisions = buildAdaptivePreviewSkillApprovalDecisions({
+      enabled: true,
+      checkpoints: [approved],
+      decisionInputs: [{
+        checkpointId: 'script:issue:3:validation',
+        decision: 'approve',
+        reason: 'Attempting to approve again.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:02:00.000Z',
+      }],
+    });
+
+    assert.equal(decisions[0].transitionResult, 'ignored');
+    assert.ok(decisions[0].transitionReason?.includes('already resolved'));
+  });
+
+  it('decision transitions are captured as deterministic journal records', async () => {
+    const checkpoint = {
+      checkpointId: 'script:issue:4:validation',
+      taskId: 'issue:4',
+      skillName: 'validation',
+      resourceType: 'script' as const,
+      reason: 'Script requires approval.',
+      risk: 'high' as const,
+      approvalState: 'pending' as const,
+      createdSource: 'adaptive-preview' as const,
+    };
+
+    const preview = createAdaptiveQueuePreview({
+      ...runtimeInputs,
+      skillApprovalCheckpoints: [checkpoint],
+      skillApprovalDecisionInputs: [{
+        checkpointId: 'script:issue:4:validation',
+        decision: 'approve',
+        reason: 'Approved.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:03:00.000Z',
+      }],
+    }, { enabled: true });
+
+    const appended: EventJournalRecord[] = [];
+
+    await captureAdaptivePreviewJournal(preview, {
+      enabled: true,
+      journalPath: 'ignored.json',
+      appendRecords: async (_filePath, records) => {
+        appended.push(...records);
+        return [...records];
+      },
+      now: () => '2026-06-23T21:03:00.000Z',
+      source: 'adapter-test',
+    });
+
+    const decisionRecord = appended.find(r => r.type === 'skill_approval_decision');
+    assert.ok(decisionRecord && decisionRecord.type === 'skill_approval_decision');
+    if (!decisionRecord || decisionRecord.type !== 'skill_approval_decision') {
+      throw new Error('Expected skill_approval_decision record');
+    }
+    assert.equal(decisionRecord.decision.transitionResult, 'applied');
+    assert.equal(decisionRecord.decision.updatedApprovalState, 'approved');
   });
 });
 

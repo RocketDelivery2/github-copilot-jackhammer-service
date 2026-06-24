@@ -13,7 +13,8 @@ export type EventJournalRecordType =
   | 'queue_signal'
   | 'skill_selection'
   | 'skill_execution_plan'
-  | 'skill_approval_checkpoint';
+  | 'skill_approval_checkpoint'
+  | 'skill_approval_decision';
 
 export type EventJournalExecutionEventRecord = {
   type: 'execution_event';
@@ -83,6 +84,8 @@ export type EventJournalSkillExecutionPlanRecord = {
 
 export type SkillApprovalResourceType = 'script' | 'reference' | 'instructions' | 'risk_gate';
 export type SkillApprovalState = 'pending' | 'approved' | 'rejected' | 'not_required';
+export type ApprovalDecisionKind = 'approve' | 'reject' | 'reset';
+export type ApprovalTransitionResult = 'applied' | 'ignored' | 'invalid';
 
 export type EventJournalSkillApprovalCheckpointRecord = {
   type: 'skill_approval_checkpoint';
@@ -101,12 +104,32 @@ export type EventJournalSkillApprovalCheckpointRecord = {
   };
 };
 
+export type EventJournalSkillApprovalDecisionRecord = {
+  type: 'skill_approval_decision';
+  createdAt: string;
+  source: string;
+  workItemId?: string;
+  decision: {
+    checkpointId: string;
+    skillName: string;
+    resourceType: SkillApprovalResourceType;
+    decision: ApprovalDecisionKind;
+    reason: string;
+    decidedBy: string;
+    decidedAt: string;
+    transitionResult: ApprovalTransitionResult;
+    transitionReason?: string;
+    updatedApprovalState: SkillApprovalState;
+  };
+};
+
 export type EventJournalRecord =
   | EventJournalExecutionEventRecord
   | EventJournalQueueSignalRecord
   | EventJournalSkillSelectionRecord
   | EventJournalSkillExecutionPlanRecord
-  | EventJournalSkillApprovalCheckpointRecord;
+  | EventJournalSkillApprovalCheckpointRecord
+  | EventJournalSkillApprovalDecisionRecord;
 
 export type CreateExecutionEventJournalRecordInput = {
   createdAt: string;
@@ -188,6 +211,24 @@ export type AppendEventJournalOptions = {
   retentionLimit?: number;
 };
 
+export type CreateSkillApprovalDecisionJournalRecordInput = {
+  createdAt: string;
+  source: string;
+  workItemId?: string;
+  decision: {
+    checkpointId: string;
+    skillName: string;
+    resourceType: SkillApprovalResourceType;
+    decision: ApprovalDecisionKind;
+    reason: string;
+    decidedBy: string;
+    decidedAt: string;
+    transitionResult: ApprovalTransitionResult;
+    transitionReason?: string;
+    updatedApprovalState: SkillApprovalState;
+  };
+};
+
 const EXECUTION_EVENT_KINDS = new Set<ExecutionEventKind>([
   'started',
   'stdout',
@@ -215,6 +256,8 @@ const QUEUE_SIGNAL_SEVERITIES = new Set<QueueSignalSeverity>([
   'error',
 ]);
 
+const APPROVAL_DECISION_KINDS = new Set<ApprovalDecisionKind>(['approve', 'reject', 'reset']);
+const APPROVAL_TRANSITION_RESULTS = new Set<ApprovalTransitionResult>(['applied', 'ignored', 'invalid']);
 const SKILL_SELECTION_RISKS = new Set<SkillSelectionRisk>(['low', 'medium', 'high']);
 const SKILL_APPROVAL_RESOURCE_TYPES = new Set<SkillApprovalResourceType>([
   'script',
@@ -388,6 +431,34 @@ export function createSkillApprovalCheckpointJournalRecord(
   return parseJournalRecord(record, 'event journal input', 0) as EventJournalSkillApprovalCheckpointRecord;
 }
 
+export function createSkillApprovalDecisionJournalRecord(
+  input: CreateSkillApprovalDecisionJournalRecordInput,
+): EventJournalSkillApprovalDecisionRecord {
+  const workItemId = input.workItemId ?? input.decision.checkpointId;
+  const record: EventJournalSkillApprovalDecisionRecord = {
+    type: 'skill_approval_decision',
+    createdAt: input.createdAt,
+    source: input.source,
+    ...(workItemId ? { workItemId } : {}),
+    decision: {
+      checkpointId: input.decision.checkpointId,
+      skillName: input.decision.skillName,
+      resourceType: input.decision.resourceType,
+      decision: input.decision.decision,
+      reason: input.decision.reason,
+      decidedBy: input.decision.decidedBy,
+      decidedAt: input.decision.decidedAt,
+      transitionResult: input.decision.transitionResult,
+      ...(input.decision.transitionReason !== undefined
+        ? { transitionReason: input.decision.transitionReason }
+        : {}),
+      updatedApprovalState: input.decision.updatedApprovalState,
+    },
+  };
+
+  return parseJournalRecord(record, 'event journal input', 0) as EventJournalSkillApprovalDecisionRecord;
+}
+
 export function applyEventJournalRetention(
   records: readonly EventJournalRecord[],
   retentionLimit?: number,
@@ -472,9 +543,19 @@ function parseJournalRecord(
     };
   }
 
+  if (type === 'skill_approval_decision') {
+    return {
+      type,
+      createdAt,
+      source,
+      ...(workItemId ? { workItemId } : {}),
+      decision: parseSkillApprovalDecisionPayload(value.decision, filePath, `${context}.decision`),
+    };
+  }
+
   throw malformedJournalError(
     filePath,
-    `${context}.type must be execution_event, queue_signal, skill_selection, skill_execution_plan, or skill_approval_checkpoint`,
+    `${context}.type must be execution_event, queue_signal, skill_selection, skill_execution_plan, skill_approval_checkpoint, or skill_approval_decision`,
   );
 }
 
@@ -711,6 +792,52 @@ function parseSkillApprovalCheckpoint(
   };
 }
 
+function parseSkillApprovalDecisionPayload(
+  value: unknown,
+  filePath: string,
+  context: string,
+): EventJournalSkillApprovalDecisionRecord['decision'] {
+  if (!isRecord(value)) {
+    throw malformedJournalError(filePath, `${context} must be an object`);
+  }
+
+  const checkpointId = requireNonEmptyString(value.checkpointId, filePath, `${context}.checkpointId`);
+  const skillName = requireNonEmptyString(value.skillName, filePath, `${context}.skillName`);
+  const resourceType = requireString(value.resourceType, filePath, `${context}.resourceType`);
+  if (!SKILL_APPROVAL_RESOURCE_TYPES.has(resourceType as SkillApprovalResourceType)) {
+    throw malformedJournalError(filePath, `${context}.resourceType is not a known skill approval resource type`);
+  }
+  const decision = requireString(value.decision, filePath, `${context}.decision`);
+  if (!APPROVAL_DECISION_KINDS.has(decision as ApprovalDecisionKind)) {
+    throw malformedJournalError(filePath, `${context}.decision is not a known approval decision kind`);
+  }
+  const reason = requireNonEmptyString(value.reason, filePath, `${context}.reason`);
+  const decidedBy = requireNonEmptyString(value.decidedBy, filePath, `${context}.decidedBy`);
+  const decidedAt = requireTimestamp(value.decidedAt, filePath, `${context}.decidedAt`);
+  const transitionResult = requireString(value.transitionResult, filePath, `${context}.transitionResult`);
+  if (!APPROVAL_TRANSITION_RESULTS.has(transitionResult as ApprovalTransitionResult)) {
+    throw malformedJournalError(filePath, `${context}.transitionResult is not a known transition result`);
+  }
+  const transitionReason = optionalNonEmptyString(value.transitionReason, filePath, `${context}.transitionReason`);
+  const updatedApprovalState = requireString(value.updatedApprovalState, filePath, `${context}.updatedApprovalState`);
+  if (!SKILL_APPROVAL_STATES.has(updatedApprovalState as SkillApprovalState)) {
+    throw malformedJournalError(filePath, `${context}.updatedApprovalState is not a known approval state`);
+  }
+
+  return {
+    checkpointId,
+    skillName,
+    resourceType: resourceType as SkillApprovalResourceType,
+    decision: decision as ApprovalDecisionKind,
+    reason,
+    decidedBy,
+    decidedAt,
+    transitionResult: transitionResult as ApprovalTransitionResult,
+    ...(transitionReason !== undefined ? { transitionReason } : {}),
+    updatedApprovalState: updatedApprovalState as SkillApprovalState,
+  };
+}
+
 function cloneJournalRecord(record: EventJournalRecord): EventJournalRecord {
   if (record.type === 'execution_event') {
     return {
@@ -789,6 +916,29 @@ function cloneJournalRecord(record: EventJournalRecord): EventJournalRecord {
         risk: record.checkpoint.risk,
         approvalState: record.checkpoint.approvalState,
         createdSource: record.checkpoint.createdSource,
+      },
+    };
+  }
+
+  if (record.type === 'skill_approval_decision') {
+    return {
+      type: record.type,
+      createdAt: record.createdAt,
+      source: record.source,
+      ...(record.workItemId ? { workItemId: record.workItemId } : {}),
+      decision: {
+        checkpointId: record.decision.checkpointId,
+        skillName: record.decision.skillName,
+        resourceType: record.decision.resourceType,
+        decision: record.decision.decision,
+        reason: record.decision.reason,
+        decidedBy: record.decision.decidedBy,
+        decidedAt: record.decision.decidedAt,
+        transitionResult: record.decision.transitionResult,
+        ...(record.decision.transitionReason !== undefined
+          ? { transitionReason: record.decision.transitionReason }
+          : {}),
+        updatedApprovalState: record.decision.updatedApprovalState,
       },
     };
   }

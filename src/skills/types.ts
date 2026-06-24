@@ -84,3 +84,31 @@ export type SkillApprovalCheckpoint = {
   approvalState: SkillApprovalState;
   createdSource: 'adaptive-preview';
 };
+
+export type ApprovalDecisionKind = 'approve' | 'reject' | 'reset';
+
+export type ApprovalDecisionInput = {
+  checkpointId: string;
+  decision: ApprovalDecisionKind;
+  reason: string;
+  decidedBy: string;
+  decidedAt: string;
+};
+
+export type ApprovalTransitionResult = 'applied' | 'ignored' | 'invalid';
+
+export type SkillApprovalDecision = {
+  checkpointId: string;
+  decision: ApprovalDecisionKind;
+  reason: string;
+  decidedBy: string;
+  decidedAt: string;
+};
+
+export type SkillApprovalCheckpointTransition = {
+  originalCheckpoint: SkillApprovalCheckpoint;
+  updatedCheckpoint: SkillApprovalCheckpoint;
+  decision: SkillApprovalDecision;
+  transitionResult: ApprovalTransitionResult;
+  transitionReason?: string;
+};
