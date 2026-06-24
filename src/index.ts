@@ -26,6 +26,7 @@ import {
   captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
   createAdaptiveQueuePreview,
+  loadAdaptivePreviewDecisionInputs,
   selectAdaptivePreviewSkills,
 } from './orchestration/adapter.js';
 import type { AdaptivePreviewSkillTask, AdaptivePreviewValidationProbe } from './orchestration/adapter.js';
@@ -401,10 +402,14 @@ async function runOnce(): Promise<void> {
       skillExecutionPlans,
       maxCheckpoints: 16,
     });
+    const previewDecisionInputs = await loadAdaptivePreviewDecisionInputs({
+      enabled: true,
+      filePath: config.ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE || undefined,
+    });
     const skillApprovalDecisions = buildAdaptivePreviewSkillApprovalDecisions({
       enabled: true,
       checkpoints: skillApprovalCheckpoints,
-      decisionInputs: [],
+      decisionInputs: previewDecisionInputs,
     });
     const adaptivePreview = createAdaptiveQueuePreview({
       activeWorkItem: state.activeWorkItem,
@@ -416,7 +421,7 @@ async function runOnce(): Promise<void> {
       skillSelections,
       skillExecutionPlans,
       skillApprovalCheckpoints,
-      skillApprovalDecisionInputs: [],
+      skillApprovalDecisionInputs: previewDecisionInputs,
     }, { enabled: true });
     const journalRecords = await captureAdaptivePreviewJournal(adaptivePreview, {
       enabled: true,
@@ -440,6 +445,9 @@ async function runOnce(): Promise<void> {
     }
     if (skillApprovalDecisions.length > 0) {
       console.log(`Adaptive queue preview applied ${skillApprovalDecisions.length} approval decision(s).`);
+    }
+    if (previewDecisionInputs.length > 0) {
+      console.log(`Adaptive queue preview loaded ${previewDecisionInputs.length} decision input(s) from ${config.ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE}.`);
     }
     console.log(`Adaptive queue preview planned ${adaptivePreview.scheduledWorkItemIds.length} item(s); existing scheduling flow remains active.`);
   }

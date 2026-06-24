@@ -11,6 +11,7 @@ import {
   captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
   createAdaptiveQueuePreview,
+  loadAdaptivePreviewDecisionInputs,
   mapRuntimeInputsToQueueSignals,
   selectAdaptivePreviewSkills,
   mapRuntimeInputsToWorkItems,
@@ -1141,6 +1142,106 @@ keywords: [validation, test, build, lint]
     }
     assert.equal(decisionRecord.decision.transitionResult, 'applied');
     assert.equal(decisionRecord.decision.updatedApprovalState, 'approved');
+  });
+
+  it('loadAdaptivePreviewDecisionInputs returns empty when disabled', async () => {
+    const inputs = await loadAdaptivePreviewDecisionInputs({ enabled: false });
+    assert.deepEqual(inputs, []);
+  });
+
+  it('loadAdaptivePreviewDecisionInputs returns empty when no filePath provided', async () => {
+    const inputs = await loadAdaptivePreviewDecisionInputs({ enabled: true });
+    assert.deepEqual(inputs, []);
+  });
+
+  it('loadAdaptivePreviewDecisionInputs returns empty when filePath is empty string', async () => {
+    const inputs = await loadAdaptivePreviewDecisionInputs({ enabled: true, filePath: '' });
+    assert.deepEqual(inputs, []);
+  });
+
+  it('loadAdaptivePreviewDecisionInputs returns empty for missing file', async () => {
+    const inputs = await loadAdaptivePreviewDecisionInputs({
+      enabled: true,
+      filePath: '/nonexistent/path/decisions.json',
+    });
+    assert.deepEqual(inputs, []);
+  });
+
+  it('loadAdaptivePreviewDecisionInputs parses valid JSON file via injectable loadFile', async () => {
+    const inputs = await loadAdaptivePreviewDecisionInputs({
+      enabled: true,
+      filePath: 'decisions.json',
+      loadFile: async () => JSON.stringify([{
+        checkpointId: 'script:issue:1:validation',
+        decision: 'approve',
+        reason: 'Approved for preview.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:00:00.000Z',
+      }]),
+    });
+
+    assert.equal(inputs.length, 1);
+    assert.equal(inputs[0].checkpointId, 'script:issue:1:validation');
+    assert.equal(inputs[0].decision, 'approve');
+    assert.equal(inputs[0].decidedBy, 'human-preview');
+  });
+
+  it('loadAdaptivePreviewDecisionInputs throws on malformed JSON', async () => {
+    await assert.rejects(
+      () => loadAdaptivePreviewDecisionInputs({
+        enabled: true,
+        filePath: 'decisions.json',
+        loadFile: async () => '{ not valid json',
+      }),
+      /Malformed adaptive preview decision inputs file "decisions\.json": invalid JSON/,
+    );
+  });
+
+  it('loadAdaptivePreviewDecisionInputs skips invalid entries and returns only valid ones', async () => {
+    const inputs = await loadAdaptivePreviewDecisionInputs({
+      enabled: true,
+      filePath: 'decisions.json',
+      loadFile: async () => JSON.stringify([
+        {
+          checkpointId: 'script:issue:1:validation',
+          decision: 'approve',
+          reason: 'Approved.',
+          decidedBy: 'human-preview',
+          decidedAt: '2026-06-23T21:00:00.000Z',
+        },
+        { bad: 'entry' },
+        {
+          checkpointId: 'risk:issue:2:typescript-patch',
+          decision: 'reject',
+          reason: 'Too risky.',
+          decidedBy: 'human-preview',
+          decidedAt: '2026-06-23T21:01:00.000Z',
+        },
+      ]),
+    });
+
+    assert.equal(inputs.length, 2);
+    assert.equal(inputs[0].decision, 'approve');
+    assert.equal(inputs[1].decision, 'reject');
+  });
+
+  it('loadAdaptivePreviewDecisionInputs applies loaded inputs to approval decisions via real file', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'jackhammer-decision-inputs-'));
+    const filePath = path.join(dir, 'decisions.json');
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(filePath, JSON.stringify([{
+      checkpointId: 'script:issue:5:validation',
+      decision: 'approve',
+      reason: 'Approved for integration test.',
+      decidedBy: 'human-preview',
+      decidedAt: '2026-06-23T22:00:00.000Z',
+    }]), 'utf8');
+
+    const inputs = await loadAdaptivePreviewDecisionInputs({ enabled: true, filePath });
+
+    assert.equal(inputs.length, 1);
+    assert.equal(inputs[0].checkpointId, 'script:issue:5:validation');
+    assert.equal(inputs[0].decision, 'approve');
   });
 });
 
