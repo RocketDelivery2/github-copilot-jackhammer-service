@@ -709,7 +709,7 @@ function cloneAgentDelegationMessage(message: AgentDelegationMessage): AgentDele
   };
 }
 
-function mapRuntimeInputsToSkillSelections(inputs: AdaptiveQueueRuntimeInputs): AdaptivePreviewSkillSelection[] {
+export function mapRuntimeInputsToSkillSelections(inputs: AdaptiveQueueRuntimeInputs): AdaptivePreviewSkillSelection[] {
   return (inputs.skillSelections ?? []).map(cloneSkillSelection);
 }
 
@@ -1028,5 +1028,6 @@ function normalizeSkillBasePath(skillPath: string | undefined, skillName: string
 function isEnoent(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
+
 
 
