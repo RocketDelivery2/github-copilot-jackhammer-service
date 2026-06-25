@@ -16,10 +16,12 @@ import {
   createSkillExecutionPlanJournalRecord,
   createQueueSignalJournalRecord,
   createSkillSelectionJournalRecord,
+  createAgentDelegationJournalRecord,
 } from './event-journal.js';
 import type { ActiveWorkItem, CommandQueueItem, CopilotGuidance, CopilotResult } from '../types.js';
 import type { CommandExecutionRequest, CommandExecutionResult } from './command-runner.js';
 import type { EventJournalRecord } from './event-journal.js';
+import type { AgentDelegationMessage } from '../agents/types.js';
 import type { ExecutionEvent, QueueSignal, WorkItem } from './types.js';
 import { buildSkillApprovalCheckpoints } from '../skills/approval-checkpoint.js';
 import { applyApprovalDecisions } from '../skills/approval-decision.js';
@@ -47,6 +49,7 @@ export type AdaptiveQueueRuntimeInputs = {
   recentResults?: readonly CopilotResult[];
   executionEvents?: readonly ExecutionEvent[];
   queueSignals?: readonly QueueSignal[];
+  agentDelegations?: readonly AgentDelegationMessage[];
   skillSelections?: readonly AdaptivePreviewSkillSelection[];
   skillExecutionPlans?: readonly SkillExecutionPlan[];
   skillApprovalCheckpoints?: readonly SkillApprovalCheckpoint[];
@@ -71,6 +74,7 @@ export type AdaptiveQueuePreview = {
   workItems: WorkItem[];
   executionEvents: ExecutionEvent[];
   signals: QueueSignal[];
+  agentDelegations: AgentDelegationMessage[];
   skillSelections: AdaptivePreviewSkillSelection[];
   skillExecutionPlans: SkillExecutionPlan[];
   skillApprovalCheckpoints: SkillApprovalCheckpoint[];
@@ -200,6 +204,7 @@ export function createAdaptiveQueuePreview(
       workItems: [],
       executionEvents: [],
       signals: [],
+      agentDelegations: [],
       skillSelections: [],
       skillExecutionPlans: [],
       skillApprovalCheckpoints: [],
@@ -211,6 +216,7 @@ export function createAdaptiveQueuePreview(
   const workItems = mapRuntimeInputsToWorkItems(inputs);
   const executionEvents = mapRuntimeInputsToExecutionEvents(inputs);
   const signals = mapRuntimeInputsToQueueSignals(inputs);
+  const agentDelegations = mapRuntimeInputsToAgentDelegations(inputs);
   const skillSelections = mapRuntimeInputsToSkillSelections(inputs);
   const skillExecutionPlans = mapRuntimeInputsToSkillExecutionPlans(inputs);
   const baseSkillApprovalCheckpoints = mapRuntimeInputsToSkillApprovalCheckpoints(inputs);
@@ -229,6 +235,7 @@ export function createAdaptiveQueuePreview(
     workItems,
     executionEvents,
     signals,
+    agentDelegations,
     skillSelections,
     skillExecutionPlans,
     skillApprovalCheckpoints,
@@ -261,6 +268,13 @@ export async function captureAdaptivePreviewJournal(
         source,
         workItemId: signal.workItemId,
         signal,
+      })),
+    ...preview.agentDelegations.map(delegation =>
+      createAgentDelegationJournalRecord({
+        createdAt,
+        source,
+        workItemId: delegation.id,
+        delegation,
       })),
     ...preview.skillSelections.map(selection =>
       createSkillSelectionJournalRecord({
@@ -671,6 +685,30 @@ export function mapRuntimeInputsToExecutionEvents(inputs: AdaptiveQueueRuntimeIn
   return (inputs.executionEvents ?? []).map(cloneExecutionEvent);
 }
 
+export function mapRuntimeInputsToAgentDelegations(inputs: AdaptiveQueueRuntimeInputs): AgentDelegationMessage[] {
+  return [...(inputs.agentDelegations ?? [])]
+    .map(cloneAgentDelegationMessage)
+    .sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt)
+      || left.id.localeCompare(right.id)
+      || left.fromAgentId.localeCompare(right.fromAgentId)
+      || left.toAgentId.localeCompare(right.toAgentId)
+      || left.topic.localeCompare(right.topic));
+}
+
+function cloneAgentDelegationMessage(message: AgentDelegationMessage): AgentDelegationMessage {
+  return {
+    id: message.id,
+    fromAgentId: message.fromAgentId,
+    toAgentId: message.toAgentId,
+    topic: message.topic,
+    payload: { ...message.payload },
+    requiredCapabilities: [...message.requiredCapabilities],
+    priority: message.priority,
+    createdAt: message.createdAt,
+  };
+}
+
 export function mapRuntimeInputsToSkillSelections(inputs: AdaptiveQueueRuntimeInputs): AdaptivePreviewSkillSelection[] {
   return (inputs.skillSelections ?? []).map(cloneSkillSelection);
 }
@@ -990,5 +1028,6 @@ function normalizeSkillBasePath(skillPath: string | undefined, skillName: string
 function isEnoent(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
+
 
 

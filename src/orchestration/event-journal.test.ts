@@ -14,6 +14,7 @@ import {
   createQueueSignalJournalRecord,
   createSkillSelectionJournalRecord,
   loadEventJournal,
+  createAgentDelegationJournalRecord,
 } from './event-journal.js';
 
 const firstCreatedAt = '2026-06-20T12:00:00.000Z';
@@ -146,6 +147,30 @@ describe('event journal', () => {
 
     assert.deepEqual(saved, [checkpoint]);
     assert.deepEqual(loaded, [checkpoint]);
+  });
+
+  it('appends preview agent delegation records', async () => {
+    const journalPath = await createJournalPath('agent-delegation');
+    const delegationRecord = createAgentDelegationJournalRecord({
+      createdAt: firstCreatedAt,
+      source: 'adaptive-preview',
+      delegation: {
+        id: 'delegation-001',
+        fromAgentId: 'orchestrator',
+        toAgentId: 'code-reviewer',
+        topic: 'Review PR #23',
+        payload: { prNumber: 23 },
+        requiredCapabilities: ['code-review'],
+        priority: 'high',
+        createdAt: '2026-06-23T20:55:00.000Z',
+      },
+    });
+
+    const saved = await appendEventJournalRecords(journalPath, [delegationRecord]);
+    const loaded = await loadEventJournal(journalPath);
+
+    assert.deepEqual(saved, [delegationRecord]);
+    assert.deepEqual(loaded, [delegationRecord]);
   });
 
   it('appends preview skill approval decision records', async () => {
