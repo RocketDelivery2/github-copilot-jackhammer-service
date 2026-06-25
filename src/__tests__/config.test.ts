@@ -28,6 +28,7 @@ describe('config', () => {
       assert.equal(parsed.ADAPTIVE_PREVIEW_CAPTURE_LIMIT, 3);
       assert.equal(parsed.ADAPTIVE_PREVIEW_VALIDATION_PROBES, '');
       assert.equal(parsed.ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE, '');
+      assert.equal(parsed.ADAPTIVE_PREVIEW_APPROVAL_STATE_FILE, '');
       assert.equal(enabled.ADAPTIVE_QUEUE_ENABLED, true);
     } finally {
       restoreEnv('OPENAI_API_KEY', previousOpenAiKey);
@@ -54,3 +55,4 @@ function restoreEnv(key: string, value: string | undefined): void {
 
   process.env[key] = value;
 }
+

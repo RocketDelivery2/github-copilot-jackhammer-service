@@ -20,12 +20,12 @@ import type { ActiveWorkItem, CommandQueueItem, CopilotResult, QueueState } from
 import { applyIndustryStandardsPriority } from './standards.js';
 import {
   buildAdaptivePreviewSkillApprovalCheckpoints,
-  buildAdaptivePreviewSkillApprovalDecisions,
   buildAdaptivePreviewSkillExecutionPlans,
   buildAdaptivePreviewCommandCaptureRequests,
   captureAdaptivePreviewCommandRunnerFeedback,
   captureAdaptivePreviewJournal,
   createAdaptiveQueuePreview,
+  loadAdaptivePreviewApprovalStatePersistence,
   loadAdaptivePreviewDecisionInputs,
   selectAdaptivePreviewSkills,
 } from './orchestration/adapter.js';
@@ -55,7 +55,7 @@ async function doctor() {
   console.log('GitHub Copilot JackHammer Service doctor complete.');
 }
 
-// â”€â”€â”€ Active-work handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Active-work handling
 
 /**
  * Handles the current active work item (issue + optional linked PR).
@@ -350,7 +350,7 @@ function dedupeSkillTasks(tasks: readonly AdaptivePreviewSkillTask[]): AdaptiveP
   return deduped;
 }
 
-// â”€â”€â”€ Main run loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Main run loop
 
 async function runOnce(): Promise<void> {
   // 1. Sync repo and build snapshot.
@@ -406,10 +406,9 @@ async function runOnce(): Promise<void> {
       enabled: true,
       filePath: config.ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE || undefined,
     });
-    const skillApprovalDecisions = buildAdaptivePreviewSkillApprovalDecisions({
+    const previewApprovalStatePersistence = await loadAdaptivePreviewApprovalStatePersistence({
       enabled: true,
-      checkpoints: skillApprovalCheckpoints,
-      decisionInputs: previewDecisionInputs,
+      filePath: config.ADAPTIVE_PREVIEW_APPROVAL_STATE_FILE || undefined,
     });
     const adaptivePreview = createAdaptiveQueuePreview({
       activeWorkItem: state.activeWorkItem,
@@ -422,7 +421,9 @@ async function runOnce(): Promise<void> {
       skillExecutionPlans,
       skillApprovalCheckpoints,
       skillApprovalDecisionInputs: previewDecisionInputs,
+      approvalStatePersistence: previewApprovalStatePersistence,
     }, { enabled: true });
+    const skillApprovalDecisions = adaptivePreview.skillApprovalDecisions;
     const journalRecords = await captureAdaptivePreviewJournal(adaptivePreview, {
       enabled: true,
       journalPath: path.resolve(process.cwd(), config.ADAPTIVE_EVENT_JOURNAL_PATH),
@@ -448,6 +449,9 @@ async function runOnce(): Promise<void> {
     }
     if (previewDecisionInputs.length > 0) {
       console.log(`Adaptive queue preview loaded ${previewDecisionInputs.length} decision input(s) from ${config.ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE}.`);
+    }
+    if (previewApprovalStatePersistence && previewApprovalStatePersistence.checkpoints.length > 0) {
+      console.log(`Adaptive queue preview loaded ${previewApprovalStatePersistence.checkpoints.length} approval state checkpoint(s) from ${config.ADAPTIVE_PREVIEW_APPROVAL_STATE_FILE}.`);
     }
     console.log(`Adaptive queue preview planned ${adaptivePreview.scheduledWorkItemIds.length} item(s); existing scheduling flow remains active.`);
   }
@@ -577,3 +581,4 @@ main().catch(err => {
   console.error(err);
   process.exit(1);
 });
+
