@@ -38,6 +38,7 @@ const ConfigSchema = z.object({
   ADAPTIVE_PREVIEW_CAPTURE_LIMIT: z.coerce.number().int().nonnegative().max(20).default(3),
   ADAPTIVE_PREVIEW_VALIDATION_PROBES: z.string().default(''),
   ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE: z.string().default(''),
+  ADAPTIVE_PREVIEW_APPROVAL_STATE_FILE: z.string().default(''),
   RUN_ONCE: boolish.default(''),
 });
 
@@ -49,3 +50,4 @@ export function parseConfig(env: Record<string, unknown>): AppConfig {
 
 export const config = parseConfig(process.env);
 export const labels = config.ISSUE_LABELS.split(',').map(s => s.trim()).filter(Boolean);
+

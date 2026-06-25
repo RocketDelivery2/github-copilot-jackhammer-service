@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import {
   buildAdaptivePreviewSkillApprovalCheckpoints,
+  loadAdaptivePreviewApprovalStatePersistence,
   buildAdaptivePreviewSkillApprovalDecisions,
   buildAdaptivePreviewSkillExecutionPlans,
   buildAdaptivePreviewCommandCaptureRequests,
@@ -1144,6 +1145,81 @@ keywords: [validation, test, build, lint]
     assert.equal(decisionRecord.decision.updatedApprovalState, 'approved');
   });
 
+  it('loadAdaptivePreviewApprovalStatePersistence returns undefined when disabled or empty file path', async () => {
+    let loadInvoked = false;
+
+    const disabled = await loadAdaptivePreviewApprovalStatePersistence({
+      enabled: false,
+      filePath: 'approval-state.json',
+      loadState: async () => {
+        loadInvoked = true;
+        return { version: 1, checkpoints: [] };
+      },
+    });
+
+    const emptyPath = await loadAdaptivePreviewApprovalStatePersistence({
+      enabled: true,
+      filePath: '',
+      loadState: async () => {
+        loadInvoked = true;
+        return { version: 1, checkpoints: [] };
+      },
+    });
+
+    assert.equal(disabled, undefined);
+    assert.equal(emptyPath, undefined);
+    assert.equal(loadInvoked, false);
+  });
+
+  it('loadAdaptivePreviewApprovalStatePersistence surfaces malformed JSON errors', async () => {
+    await assert.rejects(
+      () => loadAdaptivePreviewApprovalStatePersistence({
+        enabled: true,
+        filePath: 'approval-state.json',
+        loadState: async () => {
+          throw new Error('Malformed approval state persistence JSON in approval-state.json: invalid JSON');
+        },
+      }),
+      /Malformed approval state persistence JSON/,
+    );
+  });
+
+  it('applies persisted approval state before approval decisions', () => {
+    const checkpoint = {
+      checkpointId: 'risk:issue:2:typescript-patch',
+      taskId: 'issue:2',
+      skillName: 'typescript-patch',
+      resourceType: 'risk_gate' as const,
+      reason: 'High risk.',
+      risk: 'high' as const,
+      approvalState: 'pending' as const,
+      createdSource: 'adaptive-preview' as const,
+    };
+
+    const preview = createAdaptiveQueuePreview({
+      ...runtimeInputs,
+      skillApprovalCheckpoints: [checkpoint],
+      approvalStatePersistence: {
+        version: 1,
+        checkpoints: [{
+          checkpointId: 'risk:issue:2:typescript-patch',
+          approvalState: 'rejected',
+        }],
+      },
+      skillApprovalDecisionInputs: [{
+        checkpointId: 'risk:issue:2:typescript-patch',
+        decision: 'approve',
+        reason: 'Attempting to approve a persisted rejection.',
+        decidedBy: 'human-preview',
+        decidedAt: '2026-06-23T21:03:00.000Z',
+      }],
+    }, { enabled: true });
+
+    assert.equal(preview.skillApprovalCheckpoints[0].approvalState, 'rejected');
+    assert.equal(preview.skillApprovalDecisions.length, 1);
+    assert.equal(preview.skillApprovalDecisions[0].transitionResult, 'ignored');
+    assert.equal(preview.skillApprovalDecisions[0].updatedCheckpoint.approvalState, 'rejected');
+  });
   it('loadAdaptivePreviewDecisionInputs returns empty when disabled', async () => {
     const inputs = await loadAdaptivePreviewDecisionInputs({ enabled: false });
     assert.deepEqual(inputs, []);
@@ -1264,3 +1340,5 @@ function buildCommandExecutionResult(
     workItemId: override.workItemId,
   };
 }
+
+

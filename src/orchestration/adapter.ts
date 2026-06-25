@@ -24,6 +24,8 @@ import type { ExecutionEvent, QueueSignal, WorkItem } from './types.js';
 import { buildSkillApprovalCheckpoints } from '../skills/approval-checkpoint.js';
 import { applyApprovalDecisions } from '../skills/approval-decision.js';
 import { parseDecisionInputs } from '../skills/decision-input-source.js';
+import { applyPersistedApprovalState, loadApprovalStatePersistence } from '../skills/approval-state-persistence.js';
+import type { ApprovalStatePersistenceRecord } from '../skills/approval-state-persistence.js';
 import { buildSkillExecutionPlan } from '../skills/execution-plan.js';
 import { loadSkillDocumentFromFile } from '../skills/loader.js';
 import { selectSkillsForTask } from '../skills/selector.js';
@@ -49,6 +51,7 @@ export type AdaptiveQueueRuntimeInputs = {
   skillExecutionPlans?: readonly SkillExecutionPlan[];
   skillApprovalCheckpoints?: readonly SkillApprovalCheckpoint[];
   skillApprovalDecisionInputs?: readonly ApprovalDecisionInput[];
+  approvalStatePersistence?: ApprovalStatePersistenceRecord;
 };
 
 export type AdaptiveScheduler = (
@@ -180,6 +183,12 @@ export type AdaptivePreviewDecisionInputSourceOptions = {
   loadFile?: (path: string) => Promise<string>;
 };
 
+export type AdaptivePreviewApprovalStatePersistenceOptions = {
+  enabled: boolean;
+  filePath?: string;
+  loadState?: (path: string) => Promise<ApprovalStatePersistenceRecord>;
+};
+
 export function createAdaptiveQueuePreview(
   inputs: AdaptiveQueueRuntimeInputs,
   options: AdaptiveQueuePreviewOptions,
@@ -204,7 +213,10 @@ export function createAdaptiveQueuePreview(
   const signals = mapRuntimeInputsToQueueSignals(inputs);
   const skillSelections = mapRuntimeInputsToSkillSelections(inputs);
   const skillExecutionPlans = mapRuntimeInputsToSkillExecutionPlans(inputs);
-  const skillApprovalCheckpoints = mapRuntimeInputsToSkillApprovalCheckpoints(inputs);
+  const baseSkillApprovalCheckpoints = mapRuntimeInputsToSkillApprovalCheckpoints(inputs);
+  const skillApprovalCheckpoints = inputs.approvalStatePersistence
+    ? applyPersistedApprovalState(baseSkillApprovalCheckpoints, inputs.approvalStatePersistence)
+    : baseSkillApprovalCheckpoints;
   const skillApprovalDecisions = mapRuntimeInputsToSkillApprovalDecisions(inputs, skillApprovalCheckpoints);
   const scheduler = options.scheduler ?? defaultAdaptiveScheduler;
   const scheduledItems = scheduler(workItems, signals).map(cloneWorkItem);
@@ -536,6 +548,17 @@ export function buildAdaptivePreviewSkillApprovalCheckpoints(
     plans: options.skillExecutionPlans,
     maxCheckpoints: options.maxCheckpoints ?? 16,
   });
+}
+
+export async function loadAdaptivePreviewApprovalStatePersistence(
+  options: AdaptivePreviewApprovalStatePersistenceOptions,
+): Promise<ApprovalStatePersistenceRecord | undefined> {
+  if (!options.enabled || !options.filePath || options.filePath.trim().length === 0) {
+    return undefined;
+  }
+
+  const loadState = options.loadState ?? loadApprovalStatePersistence;
+  return loadState(options.filePath);
 }
 
 export function buildAdaptivePreviewSkillApprovalDecisions(
@@ -967,3 +990,5 @@ function normalizeSkillBasePath(skillPath: string | undefined, skillName: string
 function isEnoent(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
+
+
