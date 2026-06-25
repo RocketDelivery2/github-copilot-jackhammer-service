@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { AgentCapability, AgentDelegationMessage } from '../agents/types.js';
 import type {
   ExecutionEvent,
   ExecutionEventKind,
@@ -11,6 +12,7 @@ import type {
 export type EventJournalRecordType =
   | 'execution_event'
   | 'queue_signal'
+  | 'agent_delegation'
   | 'skill_selection'
   | 'skill_execution_plan'
   | 'skill_approval_checkpoint'
@@ -30,6 +32,14 @@ export type EventJournalQueueSignalRecord = {
   source: string;
   workItemId?: string;
   signal: QueueSignal;
+};
+
+export type EventJournalAgentDelegationRecord = {
+  type: 'agent_delegation';
+  createdAt: string;
+  source: string;
+  workItemId?: string;
+  delegation: AgentDelegationMessage;
 };
 
 export type SkillSelectionRisk = 'low' | 'medium' | 'high';
@@ -126,6 +136,7 @@ export type EventJournalSkillApprovalDecisionRecord = {
 export type EventJournalRecord =
   | EventJournalExecutionEventRecord
   | EventJournalQueueSignalRecord
+  | EventJournalAgentDelegationRecord
   | EventJournalSkillSelectionRecord
   | EventJournalSkillExecutionPlanRecord
   | EventJournalSkillApprovalCheckpointRecord
@@ -143,6 +154,13 @@ export type CreateQueueSignalJournalRecordInput = {
   source: string;
   workItemId?: string;
   signal: QueueSignal;
+};
+
+export type CreateAgentDelegationJournalRecordInput = {
+  createdAt: string;
+  source: string;
+  workItemId?: string;
+  delegation: AgentDelegationMessage;
 };
 
 export type CreateSkillSelectionJournalRecordInput = {
@@ -258,6 +276,13 @@ const QUEUE_SIGNAL_SEVERITIES = new Set<QueueSignalSeverity>([
 
 const APPROVAL_DECISION_KINDS = new Set<ApprovalDecisionKind>(['approve', 'reject', 'reset']);
 const APPROVAL_TRANSITION_RESULTS = new Set<ApprovalTransitionResult>(['applied', 'ignored', 'invalid']);
+const AGENT_DELEGATION_PRIORITIES = new Set<AgentDelegationMessage['priority']>([
+  'low',
+  'medium',
+  'high',
+  'urgent',
+]);
+
 const SKILL_SELECTION_RISKS = new Set<SkillSelectionRisk>(['low', 'medium', 'high']);
 const SKILL_APPROVAL_RESOURCE_TYPES = new Set<SkillApprovalResourceType>([
   'script',
@@ -343,6 +368,21 @@ export function createQueueSignalJournalRecord(
   };
 
   return parseJournalRecord(record, 'event journal input', 0) as EventJournalQueueSignalRecord;
+}
+
+export function createAgentDelegationJournalRecord(
+  input: CreateAgentDelegationJournalRecordInput,
+): EventJournalAgentDelegationRecord {
+  const workItemId = input.workItemId ?? input.delegation.id;
+  const record: EventJournalAgentDelegationRecord = {
+    type: 'agent_delegation',
+    createdAt: input.createdAt,
+    source: input.source,
+    ...(workItemId ? { workItemId } : {}),
+    delegation: cloneAgentDelegationMessage(input.delegation),
+  };
+
+  return parseJournalRecord(record, 'event journal input', 0) as EventJournalAgentDelegationRecord;
 }
 
 export function createSkillSelectionJournalRecord(
@@ -513,6 +553,16 @@ function parseJournalRecord(
     };
   }
 
+  if (type === 'agent_delegation') {
+    return {
+      type,
+      createdAt,
+      source,
+      ...(workItemId ? { workItemId } : {}),
+      delegation: parseAgentDelegation(value.delegation, filePath, `${context}.delegation`),
+    };
+  }
+
   if (type === 'skill_selection') {
     return {
       type,
@@ -555,7 +605,7 @@ function parseJournalRecord(
 
   throw malformedJournalError(
     filePath,
-    `${context}.type must be execution_event, queue_signal, skill_selection, skill_execution_plan, skill_approval_checkpoint, or skill_approval_decision`,
+    `${context}.type must be execution_event, queue_signal, agent_delegation, skill_selection, skill_execution_plan, skill_approval_checkpoint, or skill_approval_decision`,
   );
 }
 
@@ -612,6 +662,49 @@ function parseQueueSignal(value: unknown, filePath: string, context: string): Qu
     ...(workItemId ? { workItemId } : {}),
     ...(targetItemId ? { targetItemId } : {}),
     ...(evidence !== undefined ? { evidence } : {}),
+  };
+}
+
+function parseAgentDelegation(
+  value: unknown,
+  filePath: string,
+  context: string,
+): AgentDelegationMessage {
+  if (!isRecord(value)) {
+    throw malformedJournalError(filePath, `${context} must be an object`);
+  }
+
+  const id = requireNonEmptyString(value.id, filePath, `${context}.id`);
+  const fromAgentId = requireNonEmptyString(value.fromAgentId, filePath, `${context}.fromAgentId`);
+  const toAgentId = requireNonEmptyString(value.toAgentId, filePath, `${context}.toAgentId`);
+  const topic = requireNonEmptyString(value.topic, filePath, `${context}.topic`);
+
+  if (!isRecord(value.payload)) {
+    throw malformedJournalError(filePath, `${context}.payload must be an object`);
+  }
+
+  const requiredCapabilities = requireStringArray(
+    value.requiredCapabilities,
+    filePath,
+    `${context}.requiredCapabilities`,
+  ) as AgentCapability[];
+
+  const priority = requireString(value.priority, filePath, `${context}.priority`);
+  if (!AGENT_DELEGATION_PRIORITIES.has(priority as AgentDelegationMessage['priority'])) {
+    throw malformedJournalError(filePath, `${context}.priority is not a known delegation priority`);
+  }
+
+  const createdAt = requireTimestamp(value.createdAt, filePath, `${context}.createdAt`);
+
+  return {
+    id,
+    fromAgentId,
+    toAgentId,
+    topic,
+    payload: { ...value.payload },
+    requiredCapabilities,
+    priority: priority as AgentDelegationMessage['priority'],
+    createdAt,
   };
 }
 
@@ -849,6 +942,16 @@ function cloneJournalRecord(record: EventJournalRecord): EventJournalRecord {
     };
   }
 
+  if (record.type === 'agent_delegation') {
+    return {
+      type: record.type,
+      createdAt: record.createdAt,
+      source: record.source,
+      ...(record.workItemId ? { workItemId: record.workItemId } : {}),
+      delegation: cloneAgentDelegationMessage(record.delegation),
+    };
+  }
+
   if (record.type === 'skill_selection') {
     return {
       type: record.type,
@@ -949,6 +1052,19 @@ function cloneJournalRecord(record: EventJournalRecord): EventJournalRecord {
     source: record.source,
     ...(record.workItemId ? { workItemId: record.workItemId } : {}),
     signal: cloneQueueSignal(record.signal),
+  };
+}
+
+function cloneAgentDelegationMessage(message: AgentDelegationMessage): AgentDelegationMessage {
+  return {
+    id: message.id,
+    fromAgentId: message.fromAgentId,
+    toAgentId: message.toAgentId,
+    topic: message.topic,
+    payload: { ...message.payload },
+    requiredCapabilities: [...message.requiredCapabilities],
+    priority: message.priority,
+    createdAt: message.createdAt,
   };
 }
 

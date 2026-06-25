@@ -76,6 +76,7 @@ describe('adaptive queue adapter', () => {
     assert.deepEqual(preview.workItems, []);
     assert.deepEqual(preview.executionEvents, []);
     assert.deepEqual(preview.signals, []);
+    assert.deepEqual(preview.agentDelegations, []);
     assert.deepEqual(preview.scheduledWorkItemIds, []);
   });
 
@@ -375,6 +376,62 @@ keywords: [validation, test, build, lint]
     });
 
     assert.deepEqual(first, second);
+  });
+
+  it('captures preview agent delegation messages as deterministic journal records', async () => {
+    const preview = createAdaptiveQueuePreview({
+      agentDelegations: [
+        {
+          id: 'delegation-002',
+          fromAgentId: 'orchestrator',
+          toAgentId: 'security-architect',
+          topic: 'Security review',
+          payload: { prNumber: 23 },
+          requiredCapabilities: ['security-review'],
+          priority: 'high',
+          createdAt: '2026-06-23T20:56:00.000Z',
+        },
+        {
+          id: 'delegation-001',
+          fromAgentId: 'orchestrator',
+          toAgentId: 'code-reviewer',
+          topic: 'Code review',
+          payload: { issueNumber: 42 },
+          requiredCapabilities: ['code-review'],
+          priority: 'medium',
+          createdAt: '2026-06-23T20:55:00.000Z',
+        },
+      ],
+    }, { enabled: true });
+
+    const records = await captureAdaptivePreviewJournal(preview, {
+      enabled: true,
+      journalPath: 'unused-agent-delegation-journal.json',
+      now: () => '2026-06-23T21:00:00.000Z',
+      appendRecords: async (_journalPath, records) => [...records],
+    });
+
+    assert.deepEqual(records.map(record => record.type), ['agent_delegation', 'agent_delegation']);
+
+    const first = records[0];
+    if (!first || first.type !== 'agent_delegation') {
+      assert.fail('expected first record to be an agent delegation record');
+    }
+
+    assert.equal(first.createdAt, '2026-06-23T21:00:00.000Z');
+    assert.equal(first.source, 'adaptive-preview');
+    assert.equal(first.workItemId, 'delegation-001');
+    assert.equal(first.delegation.toAgentId, 'code-reviewer');
+    assert.deepEqual(first.delegation.payload, { issueNumber: 42 });
+    assert.deepEqual(first.delegation.requiredCapabilities, ['code-review']);
+
+    const second = records[1];
+    if (!second || second.type !== 'agent_delegation') {
+      assert.fail('expected second record to be an agent delegation record');
+    }
+
+    assert.equal(second.workItemId, 'delegation-002');
+    assert.equal(second.delegation.toAgentId, 'security-architect');
   });
 
   it('captures preview skill-selection journal records deterministically', async () => {
