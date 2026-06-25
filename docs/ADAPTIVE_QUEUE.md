@@ -64,3 +64,17 @@ Rebalancing is score based and deterministic. Higher scores run earlier, and ori
 
 Fix-first behavior is the strongest rule: build, test, or lint failures inject or promote a `fix` item ahead of remaining feature and refactor work. Urgent signals then promote targeted work. Blocked items and items with incomplete dependencies are deprioritized. Completed and skipped work is kept at the end.
 
+
+## Agent Delegation Event Journal (Preview Only)
+
+This release adds preview-only capture of agent delegation events to the adaptive event journal. When `ADAPTIVE_QUEUE_ENABLED=true`, the system may append `agent_delegation` records to the event journal, each with a deterministic timestamp, source, optional work item ID, and the original AgentDelegationMessage as captured during agent-to-agent delegation transitions for preview validation. This feature is strictly disabled by default and remains isolated from production scheduling—no runtime behavior is affected unless the feature flag is enabled.
+
+Captured delegation records:
+- Are appended in deterministic order as delegation interactions occur in the preview adapter.
+- Always record the exact input, including agent IDs, topic, payload, required capabilities, priority, and creation time per `AgentDelegationMessage`.
+- Serve as a validation and analysis aid for future automated delegation planning; legacy queue execution never reads these records.
+
+Limitations and expectations:
+- The input array `agentDelegations` is mapped precisely to journal records for honest previewing.
+- Automated and manual validations can inspect these records under `.ai/adaptive-preview-event-journal.json` (or the configured path) to confirm intended deterministic ordering and correctness.
+- Strictly preview-only: these records do not participate in, or alter, any production queue, scheduling, or execution logic.
