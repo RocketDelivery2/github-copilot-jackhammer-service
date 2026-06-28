@@ -1,0 +1,1 @@
+// Codex reviewer prompt inventory module\\n// Exports canonical reviewer prompt inventory with stable metadata.\\n\\nexport interface ReviewerPromptMetadata {\\n  id: string;\\n  displayName: string;\\n  filename: string;\\n  repoPath: string;\\n  purpose: string;\\n}\\n\\nexport const reviewerPrompts: ReviewerPromptMetadata[] = [\\n  // To be populated in next commit.\\n];\\n
