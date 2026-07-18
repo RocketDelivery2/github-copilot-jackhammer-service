@@ -146,6 +146,9 @@ async function main(): Promise<void> {
 
   const workflowAutoPublish = parseActionBoolean(process.env.INPUT_AUTO_PUBLISH);
   const workflowWindowDays = process.env.INPUT_ACTIVITY_WINDOW_DAYS ? Number(process.env.INPUT_ACTIVITY_WINDOW_DAYS) : undefined;
+  const requestedDiscussionType = argv['discussion-type'] ?? process.env.INPUT_DISCUSSION_TYPE ?? '';
+  const defaultType = parseDiscussionType(String(requestedDiscussionType)) ?? config.DISCUSSIONS_DEFAULT_TYPE;
+  const categorySlug = argv['discussion-category'] ?? process.env.INPUT_CATEGORY ?? config.DISCUSSIONS_CATEGORY_SLUG;
 
   const result = await runDiscussionWriter({
     resolveDiscussionCategory: resolveDiscussionCategoryBySlugOrName,
@@ -159,8 +162,8 @@ async function main(): Promise<void> {
     acquireRunLock: defaultAcquireRunLock,
   }, {
     autoPublish: argv['auto-publish'] ?? workflowAutoPublish,
-    categorySlug: argv['discussion-category'] ?? process.env.INPUT_CATEGORY ?? config.DISCUSSIONS_CATEGORY_SLUG,
-    defaultType: parseDiscussionType(String(argv['discussion-type'] ?? process.env.INPUT_DISCUSSION_TYPE ?? '')) ?? config.DISCUSSIONS_DEFAULT_TYPE,
+    categorySlug,
+    defaultType,
     activityWindowDays: argv['activity-window-days'] ?? workflowWindowDays,
   });
 

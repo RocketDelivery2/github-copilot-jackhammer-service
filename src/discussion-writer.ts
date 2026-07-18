@@ -200,6 +200,8 @@ const GENERATED_DISCUSSION_SCHEMA = z.object({
   materialChangeCount: z.number().int().nonnegative(),
 });
 
+const BANNED_DISCUSSION_CLAIMS = [/\brevolutionary\b/i, /\bperfect\b/i, /\bfully autonomous\b/i];
+
 export function normalizeDiscussionTitle(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -657,8 +659,7 @@ function countWords(text: string): number {
 }
 
 function rejectUnsupportedClaims(body: string): void {
-  const bannedPhrases = [/\brevolutionary\b/i, /\bperfect\b/i, /\bfully autonomous\b/i];
-  if (bannedPhrases.some(pattern => pattern.test(body))) {
+  if (BANNED_DISCUSSION_CLAIMS.some(pattern => pattern.test(body))) {
     throw new Error('Generated discussion contains unsupported claim language.');
   }
 }
