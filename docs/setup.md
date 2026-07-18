@@ -216,3 +216,82 @@ Raw handoff parsing and canonical Copilot command formatting are documented in [
 ## 10. Feedback-loop queue policy
 
 JackHammer should continuously exchange context between ChatGPT/OpenAI and Copilot coding agent: gather latest snapshot, git/PR/check/log context (with recent logs summarized or truncated), generate or refine one Copilot command, add and reprioritize queue, finish active work first (questions and failed checks before new work), then merge/sync and repeat; see [`docs/FEEDBACK_LOOP_QUEUE.md`](./FEEDBACK_LOOP_QUEUE.md).
+
+
+---
+
+## 11. Discussion writer setup (preview-first)
+
+### Enable repository Discussions feature
+
+In the serviced repository settings, ensure **Discussions** is enabled before using automated publishing.
+
+### Required workflow permissions
+
+The `discussion-writer` workflow must run with:
+
+- `contents: read`
+- `discussions: write`
+- `issues: read`
+- `pull-requests: read`
+
+Do not grant `contents: write`, `actions: write`, or broad `write-all` permissions.
+
+### Preview-only configuration
+
+Start with:
+
+```dotenv
+DISCUSSIONS_ENABLED=true
+DISCUSSIONS_AUTO_PUBLISH=false
+DRY_RUN=true
+DISCUSSIONS_CATEGORY_SLUG=general
+```
+
+Manual run:
+
+```bash
+node --import tsx src/discussion-writer-cli.ts
+```
+
+Expected behavior:
+- writes preview to `.ai/discussion-preview.md`
+- appends preview to GitHub Actions job summary
+- uploads preview as a workflow artifact
+- does **not** publish a Discussion
+
+### Enable automatic publishing
+
+Only after preview quality is confirmed:
+
+```dotenv
+DRY_RUN=false
+DISCUSSIONS_AUTO_PUBLISH=true
+```
+
+Keep `DISCUSSIONS_MAX_PER_RUN=1` and review category settings before enabling.
+
+### Duplicate prevention and state
+
+Published discussions include a hidden deterministic key marker and state is persisted in:
+
+- `.ai/discussions-state.json`
+
+Before publishing, JackHammer checks:
+1. local persisted state
+2. recent Discussions for the key marker
+3. normalized title duplicates
+4. source material hash overlap
+
+### Failed run recovery
+
+- Failed publication attempts do not mark success in state.
+- To pause immediately, set `DISCUSSIONS_ENABLED=false`.
+- To keep generation but disable mutation, set `DISCUSSIONS_AUTO_PUBLISH=false`.
+- If category resolution fails, fix `DISCUSSIONS_CATEGORY_SLUG` and rerun.
+
+### Limitations and expected cost notes
+
+- Scheduled runs may produce no post when material changes are insufficient.
+- Release, PR, issue, commit, and docs data are gathered each run and consume API quota.
+- Preview-first mode is recommended to calibrate thresholds before enabling publication.

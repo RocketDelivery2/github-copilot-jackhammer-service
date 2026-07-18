@@ -152,6 +152,73 @@ COPILOT_ASSIGNEE=<exact-copilot-agent-login>
 
 ---
 
+
+---
+
+## Automated GitHub Discussions writer
+
+JackHammer includes a production-safe discussion writer pipeline that is **disabled by default**.
+
+### What it does
+
+- Collects recent repository activity (releases, merged PRs, closed issues, commits, docs context)
+- Skips publishing when there are no material changes
+- Selects one discussion type (release, weekly update, feature spotlight, architecture, roadmap, or community question)
+- Generates a validated draft (title, markdown body, hashtags, references, rationale)
+- Prevents duplicates with deterministic content keys and hidden markers
+- Writes preview output to `.ai/discussion-preview.md`
+- Publishes only when explicitly enabled
+
+### Core controls
+
+```dotenv
+DISCUSSIONS_ENABLED=false
+DISCUSSIONS_AUTO_PUBLISH=false
+DISCUSSIONS_CATEGORY_SLUG=general
+DISCUSSIONS_MAX_PER_RUN=1
+DISCUSSIONS_ACTIVITY_WINDOW_DAYS=14
+DISCUSSIONS_MIN_DAYS_BETWEEN_POSTS=7
+DISCUSSIONS_MIN_MATERIAL_CHANGES=1
+DISCUSSIONS_STATE_FILE=.ai/discussions-state.json
+DISCUSSIONS_DEFAULT_TYPE=auto
+```
+
+Rules:
+- `DISCUSSIONS_ENABLED=false` disables generation and publishing.
+- `DISCUSSIONS_AUTO_PUBLISH=false` keeps output preview-only.
+- `DRY_RUN=true` always overrides publishing.
+- Category resolution failures fail closed.
+
+### Workflow
+
+Use `.github/workflows/discussion-writer.yml` for:
+- `workflow_dispatch`
+- weekly schedule
+- release published events
+
+The workflow uses least-privilege permissions:
+
+```yaml
+permissions:
+  contents: read
+  discussions: write
+  issues: read
+  pull-requests: read
+```
+
+### Manual preview run
+
+```bash
+node --import tsx src/discussion-writer-cli.ts
+```
+
+### Recovery and rollback
+
+- Immediate disablement: set `DISCUSSIONS_ENABLED=false`.
+- Pause publishing only: set `DISCUSSIONS_AUTO_PUBLISH=false`.
+- If publication fails, state is not marked as published.
+- If duplicate detection is too strict/loose, adjust `DISCUSSIONS_MIN_MATERIAL_CHANGES` and `DISCUSSIONS_ACTIVITY_WINDOW_DAYS`.
+
 ## Behaviour notes
 
 ### Brain fallback (`BRAIN_FALLBACK_ENABLED`)
