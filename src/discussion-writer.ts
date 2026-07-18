@@ -147,14 +147,14 @@ export type DiscussionWriterResult = {
 };
 
 
-function envBool(value: string | undefined): boolean {
+function parseEnvBoolean(value: string | undefined): boolean {
   if (!value) {
     return false;
   }
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
-function envInt(value: string | undefined, fallback: number): number {
+function parseEnvInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     return fallback;
@@ -164,17 +164,17 @@ function envInt(value: string | undefined, fallback: number): number {
 
 function getDiscussionDefaultsFromEnv() {
   return {
-    enabled: envBool(process.env.DISCUSSIONS_ENABLED),
-    autoPublish: envBool(process.env.DISCUSSIONS_AUTO_PUBLISH),
+    enabled: parseEnvBoolean(process.env.DISCUSSIONS_ENABLED),
+    autoPublish: parseEnvBoolean(process.env.DISCUSSIONS_AUTO_PUBLISH),
     categorySlug: process.env.DISCUSSIONS_CATEGORY_SLUG || 'general',
-    maxPerRun: envInt(process.env.DISCUSSIONS_MAX_PER_RUN, 1),
-    activityWindowDays: envInt(process.env.DISCUSSIONS_ACTIVITY_WINDOW_DAYS, 14),
-    minDaysBetweenPosts: envInt(process.env.DISCUSSIONS_MIN_DAYS_BETWEEN_POSTS, 7),
-    minMaterialChanges: envInt(process.env.DISCUSSIONS_MIN_MATERIAL_CHANGES, 1),
+    maxPerRun: parseEnvInteger(process.env.DISCUSSIONS_MAX_PER_RUN, 1),
+    activityWindowDays: parseEnvInteger(process.env.DISCUSSIONS_ACTIVITY_WINDOW_DAYS, 14),
+    minDaysBetweenPosts: parseEnvInteger(process.env.DISCUSSIONS_MIN_DAYS_BETWEEN_POSTS, 7),
+    minMaterialChanges: parseEnvInteger(process.env.DISCUSSIONS_MIN_MATERIAL_CHANGES, 1),
     stateFile: process.env.DISCUSSIONS_STATE_FILE || '.ai/discussions-state.json',
     defaultType: (process.env.DISCUSSIONS_DEFAULT_TYPE || 'auto') as 'auto' | DiscussionType,
     hashtags: (process.env.DISCUSSIONS_HASHTAGS || DEFAULT_DISCUSSION_HASHTAGS.join(',')).split(','),
-    dryRun: envBool(process.env.DRY_RUN),
+    dryRun: parseEnvBoolean(process.env.DRY_RUN),
   };
 }
 
@@ -187,11 +187,16 @@ const SUPPORTED_DISCUSSION_TYPES: DiscussionType[] = [
   'community-question',
 ];
 
+const MIN_DISCUSSION_HASHTAG_COUNT = 3;
+const MAX_DISCUSSION_HASHTAG_COUNT = 6;
+const MIN_DISCUSSION_WORD_COUNT = 250;
+const MAX_DISCUSSION_WORD_COUNT = 1200;
+
 const GENERATED_DISCUSSION_SCHEMA = z.object({
   type: z.enum(SUPPORTED_DISCUSSION_TYPES as [DiscussionType, ...DiscussionType[]]),
   title: z.string().trim().min(1),
   body: z.string().trim().min(1),
-  hashtags: z.array(z.string()).min(3).max(6),
+  hashtags: z.array(z.string()).min(MIN_DISCUSSION_HASHTAG_COUNT).max(MAX_DISCUSSION_HASHTAG_COUNT),
   sourceReferences: z.array(z.object({
     kind: z.enum(['release', 'pull-request', 'issue', 'commit', 'file']),
     identifier: z.string().trim().min(1),
@@ -668,7 +673,7 @@ function validateGeneratedDiscussion(generated: GeneratedDiscussion): GeneratedD
   const parsed = GENERATED_DISCUSSION_SCHEMA.parse(generated);
 
   const wordCount = countWords(parsed.body);
-  if (wordCount < 250 || wordCount > 1200) {
+  if (wordCount < MIN_DISCUSSION_WORD_COUNT || wordCount > MAX_DISCUSSION_WORD_COUNT) {
     throw new Error(`Generated discussion body length is out of range (${wordCount} words).`);
   }
 

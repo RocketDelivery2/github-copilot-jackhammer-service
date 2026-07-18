@@ -95,7 +95,7 @@ async function readRepositoryEvidenceFiles(): Promise<ActivityFile[]> {
   return results;
 }
 
-function parseActionBoolean(rawValue: string | undefined): boolean | undefined {
+function parseWorkflowInputBoolean(rawValue: string | undefined): boolean | undefined {
   if (rawValue === undefined || rawValue === '') {
     return undefined;
   }
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
     throw new Error('Discussions are disabled (DISCUSSIONS_ENABLED=false).');
   }
 
-  const workflowAutoPublish = parseActionBoolean(process.env.INPUT_AUTO_PUBLISH);
+  const workflowAutoPublish = parseWorkflowInputBoolean(process.env.INPUT_AUTO_PUBLISH);
   const workflowWindowDays = process.env.INPUT_ACTIVITY_WINDOW_DAYS ? Number(process.env.INPUT_ACTIVITY_WINDOW_DAYS) : undefined;
   const requestedDiscussionType = argv['discussion-type'] ?? process.env.INPUT_DISCUSSION_TYPE ?? '';
   const defaultType = parseDiscussionType(String(requestedDiscussionType)) ?? config.DISCUSSIONS_DEFAULT_TYPE;
