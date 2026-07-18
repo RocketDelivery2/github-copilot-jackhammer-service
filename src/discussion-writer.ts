@@ -563,6 +563,13 @@ The discussion writer capability exists to turn verified repository activity int
 - Prevents duplicates through deterministic keys, persisted state, and recent discussion checks.
 - Supports preview-first execution with optional explicit publication.
 
+## Recent repository evidence
+### Merged pull requests
+${priorities}
+
+### Completed issues
+${issueSummary}
+
 ## Reliability and safety controls
 The feature remains disabled by default and respects global dry-run settings. Publication state is written atomically only after successful GitHub mutation, reducing corruption risk during failure or retries. Concurrent runs use a lock to avoid duplicate publishing in overlapping workflows.
 
