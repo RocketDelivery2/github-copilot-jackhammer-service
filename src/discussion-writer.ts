@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { config } from './config.js';
 
 export type DiscussionType =
   | 'release'
@@ -142,6 +141,38 @@ export type DiscussionWriterResult = {
   contentKey?: string;
   createdDiscussion?: CreatedDiscussion;
 };
+
+
+function envBool(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+}
+
+function envInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.trunc(parsed);
+}
+
+function getDiscussionDefaultsFromEnv() {
+  return {
+    enabled: envBool(process.env.DISCUSSIONS_ENABLED),
+    autoPublish: envBool(process.env.DISCUSSIONS_AUTO_PUBLISH),
+    categorySlug: process.env.DISCUSSIONS_CATEGORY_SLUG || 'general',
+    maxPerRun: envInt(process.env.DISCUSSIONS_MAX_PER_RUN, 1),
+    activityWindowDays: envInt(process.env.DISCUSSIONS_ACTIVITY_WINDOW_DAYS, 14),
+    minDaysBetweenPosts: envInt(process.env.DISCUSSIONS_MIN_DAYS_BETWEEN_POSTS, 7),
+    minMaterialChanges: envInt(process.env.DISCUSSIONS_MIN_MATERIAL_CHANGES, 1),
+    stateFile: process.env.DISCUSSIONS_STATE_FILE || '.ai/discussions-state.json',
+    defaultType: (process.env.DISCUSSIONS_DEFAULT_TYPE || 'auto') as 'auto' | DiscussionType,
+    hashtags: (process.env.DISCUSSIONS_HASHTAGS || '#GitHubCopilot,#CodingAgents,#AIAgents,#AgenticAI,#GitHubAutomation,#DevOpsAutomation,#DeveloperTools,#OpenAI,#TypeScript,#NodeJS').split(','),
+    dryRun: envBool(process.env.DRY_RUN),
+  };
+}
 
 const ALLOWED_HASHTAGS = [
   '#GitHubCopilot',
@@ -814,7 +845,8 @@ export async function runDiscussionWriter(
   dependencies: DiscussionWriterDependencies,
   options: DiscussionWriterOptions = {},
 ): Promise<DiscussionWriterResult> {
-  const enabled = options.enabled ?? config.DISCUSSIONS_ENABLED;
+  const defaults = getDiscussionDefaultsFromEnv();
+  const enabled = options.enabled ?? defaults.enabled;
   if (!enabled) {
     return {
       status: 'disabled',
@@ -822,7 +854,7 @@ export async function runDiscussionWriter(
     };
   }
 
-  const maxPerRun = Math.min(options.maxPerRun ?? config.DISCUSSIONS_MAX_PER_RUN, 3);
+  const maxPerRun = Math.min(options.maxPerRun ?? defaults.maxPerRun, 3);
   if (maxPerRun < 1) {
     throw new Error('DISCUSSIONS_MAX_PER_RUN must be at least 1.');
   }
@@ -831,15 +863,15 @@ export async function runDiscussionWriter(
     throw new Error('DISCUSSIONS_MAX_PER_RUN exceeds the enforced upper bound of 3.');
   }
 
-  const activityWindowDays = options.activityWindowDays ?? config.DISCUSSIONS_ACTIVITY_WINDOW_DAYS;
-  const minDaysBetweenPosts = options.minDaysBetweenPosts ?? config.DISCUSSIONS_MIN_DAYS_BETWEEN_POSTS;
-  const minMaterialChanges = options.minMaterialChanges ?? config.DISCUSSIONS_MIN_MATERIAL_CHANGES;
-  const autoPublish = (options.autoPublish ?? config.DISCUSSIONS_AUTO_PUBLISH) && !(options.dryRun ?? config.DRY_RUN);
-  const stateFile = path.resolve(process.cwd(), options.stateFile ?? config.DISCUSSIONS_STATE_FILE);
+  const activityWindowDays = options.activityWindowDays ?? defaults.activityWindowDays;
+  const minDaysBetweenPosts = options.minDaysBetweenPosts ?? defaults.minDaysBetweenPosts;
+  const minMaterialChanges = options.minMaterialChanges ?? defaults.minMaterialChanges;
+  const autoPublish = (options.autoPublish ?? defaults.autoPublish) && !(options.dryRun ?? defaults.dryRun);
+  const stateFile = path.resolve(process.cwd(), options.stateFile ?? defaults.stateFile);
   const lockFilePath = `${stateFile}.lock`;
-  const categorySlug = options.categorySlug ?? config.DISCUSSIONS_CATEGORY_SLUG;
-  const defaultType = options.defaultType ?? config.DISCUSSIONS_DEFAULT_TYPE;
-  const hashtags = parseHashtagInventory(options.hashtags ?? config.DISCUSSIONS_HASHTAGS.split(','));
+  const categorySlug = options.categorySlug ?? defaults.categorySlug;
+  const defaultType = options.defaultType ?? defaults.defaultType;
+  const hashtags = parseHashtagInventory(options.hashtags ?? defaults.hashtags);
   const now = dependencies.now();
 
   if (maxPerRun !== 1) {
