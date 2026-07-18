@@ -1,5 +1,6 @@
 ﻿import 'dotenv/config';
 import { z } from 'zod';
+import { DEFAULT_DISCUSSION_HASHTAGS_CSV } from './discussion-hashtags.js';
 
 const boolish = z.preprocess(v => {
   if (typeof v !== 'string') return false;
@@ -48,7 +49,7 @@ const ConfigSchema = z.object({
   DISCUSSIONS_MIN_MATERIAL_CHANGES: z.coerce.number().int().positive().max(50).default(1),
   DISCUSSIONS_STATE_FILE: z.string().min(1).default('.ai/discussions-state.json'),
   DISCUSSIONS_DEFAULT_TYPE: z.enum(['auto', 'release', 'weekly-update', 'feature-spotlight', 'architecture', 'roadmap', 'community-question']).default('auto'),
-  DISCUSSIONS_HASHTAGS: z.string().default('#GitHubCopilot,#CodingAgents,#AIAgents,#AgenticAI,#GitHubAutomation,#DevOpsAutomation,#DeveloperTools,#OpenAI,#TypeScript,#NodeJS'),
+  DISCUSSIONS_HASHTAGS: z.string().default(DEFAULT_DISCUSSION_HASHTAGS_CSV),
   RUN_ONCE: boolish.default(''),
 });
 
@@ -60,4 +61,3 @@ export function parseConfig(env: Record<string, unknown>): AppConfig {
 
 export const config = parseConfig(process.env);
 export const labels = config.ISSUE_LABELS.split(',').map(s => s.trim()).filter(Boolean);
-

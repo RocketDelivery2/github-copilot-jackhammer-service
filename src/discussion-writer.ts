@@ -2,6 +2,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import {
+  ALLOWED_DISCUSSION_HASHTAGS,
+  DEFAULT_DISCUSSION_HASHTAGS,
+} from './discussion-hashtags.js';
 
 export type DiscussionType =
   | 'release'
@@ -169,25 +173,10 @@ function getDiscussionDefaultsFromEnv() {
     minMaterialChanges: envInt(process.env.DISCUSSIONS_MIN_MATERIAL_CHANGES, 1),
     stateFile: process.env.DISCUSSIONS_STATE_FILE || '.ai/discussions-state.json',
     defaultType: (process.env.DISCUSSIONS_DEFAULT_TYPE || 'auto') as 'auto' | DiscussionType,
-    hashtags: (process.env.DISCUSSIONS_HASHTAGS || '#GitHubCopilot,#CodingAgents,#AIAgents,#AgenticAI,#GitHubAutomation,#DevOpsAutomation,#DeveloperTools,#OpenAI,#TypeScript,#NodeJS').split(','),
+    hashtags: (process.env.DISCUSSIONS_HASHTAGS || DEFAULT_DISCUSSION_HASHTAGS.join(',')).split(','),
     dryRun: envBool(process.env.DRY_RUN),
   };
 }
-
-const ALLOWED_HASHTAGS = [
-  '#GitHubCopilot',
-  '#CodingAgents',
-  '#AIAgents',
-  '#AgenticAI',
-  '#GitHubAutomation',
-  '#DevOpsAutomation',
-  '#DeveloperTools',
-  '#OpenAI',
-  '#TypeScript',
-  '#NodeJS',
-  '#SoftwareEngineering',
-  '#RepositoryAutomation',
-] as const;
 
 const SUPPORTED_DISCUSSION_TYPES: DiscussionType[] = [
   'release',
@@ -267,7 +256,7 @@ function tokenizeHashtags(raw: string[]): string[] {
 }
 
 export function validateHashtagInventory(hashtagInventory: readonly string[]): void {
-  const allowed = new Set<string>(ALLOWED_HASHTAGS);
+  const allowed = new Set<string>(ALLOWED_DISCUSSION_HASHTAGS);
   for (const hashtag of hashtagInventory) {
     if (!allowed.has(hashtag)) {
       throw new Error(`Invalid DISCUSSIONS_HASHTAGS entry: ${hashtag}.`);
@@ -689,7 +678,7 @@ function validateGeneratedDiscussion(generated: GeneratedDiscussion): GeneratedD
     throw new Error('Generated discussion hashtags must not contain duplicates.');
   }
 
-  const allowedHashtags = new Set<string>(ALLOWED_HASHTAGS);
+  const allowedHashtags = new Set<string>(ALLOWED_DISCUSSION_HASHTAGS);
   if (uniqueHashtags.some(hashtag => !allowedHashtags.has(hashtag))) {
     throw new Error('Generated discussion contains unsupported hashtags.');
   }
