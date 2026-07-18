@@ -870,13 +870,9 @@ export async function runDiscussionWriter(
     };
   }
 
-  const maxPerRun = Math.min(options.maxPerRun ?? defaults.maxPerRun, 3);
+  const maxPerRun = options.maxPerRun ?? defaults.maxPerRun;
   if (maxPerRun < 1) {
     throw new Error('DISCUSSIONS_MAX_PER_RUN must be at least 1.');
-  }
-
-  if (maxPerRun > 3) {
-    throw new Error('DISCUSSIONS_MAX_PER_RUN exceeds the enforced upper bound of 3.');
   }
 
   const activityWindowDays = options.activityWindowDays ?? defaults.activityWindowDays;
