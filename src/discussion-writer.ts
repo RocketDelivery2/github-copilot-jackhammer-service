@@ -327,7 +327,10 @@ function countMaterialChanges(activity: RepositoryActivity): number {
   const prMaterial = activity.mergedPullRequests.filter(pr => !isTrivialTitle(pr.title)).length;
   const issueMaterial = activity.closedIssues.filter(issue => !isTrivialTitle(issue.title)).length;
   const commitMaterial = activity.commits.filter(commit => !isTrivialTitle(commit.message)).length;
-  const docsMaterial = activity.docsFiles.filter(file => /docs\//i.test(file.path)).length;
+  const docsMaterial = activity.docsFiles.filter(file => {
+    const normalizedPath = file.path.toLowerCase();
+    return normalizedPath === 'readme.md' || normalizedPath.startsWith('docs/');
+  }).length;
   return releaseMaterial + prMaterial + issueMaterial + commitMaterial + docsMaterial;
 }
 
@@ -565,6 +568,12 @@ The feature remains disabled by default and respects global dry-run settings. Pu
 
 ## Where this helps maintainers
 Maintainers can review preview output in GitHub Actions summaries before enabling publication. That supports incremental rollout and immediate rollback without changing broader orchestration behavior.
+
+## Evidence-backed references
+${sourceReferences.map(reference => `- ${reference.kind}: ${reference.identifier}`).join('\n')}
+
+## Operational rollout guidance
+Start with preview-only execution, inspect the generated title, body, hashtags, and duplicate-check reason, and confirm the category mapping is correct before permitting publication. After that, enable publication only for repositories that already enforce required checks, review policies, and minimal workflow permissions so the discussion writer remains an additive communication layer rather than a bypass around governance.
 
 ## Current priorities
 - Improve quality thresholds for smaller repositories.
