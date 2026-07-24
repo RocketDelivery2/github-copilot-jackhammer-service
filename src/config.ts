@@ -1,5 +1,6 @@
 ﻿import 'dotenv/config';
 import { z } from 'zod';
+import { DEFAULT_DISCUSSION_HASHTAGS_CSV } from './discussion-hashtags.js';
 
 const boolish = z.preprocess(v => {
   if (typeof v !== 'string') return false;
@@ -39,6 +40,16 @@ const ConfigSchema = z.object({
   ADAPTIVE_PREVIEW_VALIDATION_PROBES: z.string().default(''),
   ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE: z.string().default(''),
   ADAPTIVE_PREVIEW_APPROVAL_STATE_FILE: z.string().default(''),
+  DISCUSSIONS_ENABLED: boolish.default(''),
+  DISCUSSIONS_AUTO_PUBLISH: boolish.default(''),
+  DISCUSSIONS_CATEGORY_SLUG: z.string().min(1).default('general'),
+  DISCUSSIONS_MAX_PER_RUN: z.coerce.number().int().positive().max(3).default(1),
+  DISCUSSIONS_ACTIVITY_WINDOW_DAYS: z.coerce.number().int().positive().max(90).default(14),
+  DISCUSSIONS_MIN_DAYS_BETWEEN_POSTS: z.coerce.number().int().nonnegative().max(365).default(7),
+  DISCUSSIONS_MIN_MATERIAL_CHANGES: z.coerce.number().int().positive().max(50).default(1),
+  DISCUSSIONS_STATE_FILE: z.string().min(1).default('.ai/discussions-state.json'),
+  DISCUSSIONS_DEFAULT_TYPE: z.enum(['auto', 'release', 'weekly-update', 'feature-spotlight', 'architecture', 'roadmap', 'community-question']).default('auto'),
+  DISCUSSIONS_HASHTAGS: z.string().default(DEFAULT_DISCUSSION_HASHTAGS_CSV),
   RUN_ONCE: boolish.default(''),
 });
 
@@ -50,4 +61,3 @@ export function parseConfig(env: Record<string, unknown>): AppConfig {
 
 export const config = parseConfig(process.env);
 export const labels = config.ISSUE_LABELS.split(',').map(s => s.trim()).filter(Boolean);
-

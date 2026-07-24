@@ -1,0 +1,93 @@
+name: discussion-writer
+
+on:
+  workflow_dispatch:
+    inputs:
+      discussion_type:
+        description: Discussion type override
+        type: choice
+        required: false
+        default: auto
+        options:
+          - auto
+          - release
+          - weekly-update
+          - feature-spotlight
+          - architecture
+          - roadmap
+          - community-question
+      category:
+        description: Discussion category slug or name
+        type: string
+        required: false
+        default: general
+      auto_publish:
+        description: Publish generated discussion
+        type: boolean
+        required: false
+        default: false
+      activity_window_days:
+        description: Activity window in days
+        type: number
+        required: false
+        default: 14
+  schedule:
+    - cron: '0 14 * * 1'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  discussions: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: discussion-writer-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  discussion-writer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'unused-for-discussion-writer' }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_OWNER: ${{ github.repository_owner }}
+      GITHUB_REPO: ${{ github.event.repository.name }}
+      DISCUSSIONS_ENABLED: ${{ vars.DISCUSSIONS_ENABLED || 'false' }}
+      DISCUSSIONS_AUTO_PUBLISH: ${{ vars.DISCUSSIONS_AUTO_PUBLISH || 'false' }}
+      DISCUSSIONS_CATEGORY_SLUG: ${{ vars.DISCUSSIONS_CATEGORY_SLUG || 'general' }}
+      DISCUSSIONS_ACTIVITY_WINDOW_DAYS: ${{ vars.DISCUSSIONS_ACTIVITY_WINDOW_DAYS || '14' }}
+      DISCUSSIONS_MIN_DAYS_BETWEEN_POSTS: ${{ vars.DISCUSSIONS_MIN_DAYS_BETWEEN_POSTS || '7' }}
+      DISCUSSIONS_MIN_MATERIAL_CHANGES: ${{ vars.DISCUSSIONS_MIN_MATERIAL_CHANGES || '1' }}
+      DISCUSSIONS_STATE_FILE: .ai/discussions-state.json
+      DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
+      INPUT_DISCUSSION_TYPE: ${{ inputs.discussion_type || '' }}
+      INPUT_CATEGORY: ${{ inputs.category || '' }}
+      INPUT_AUTO_PUBLISH: ${{ inputs.auto_publish || '' }}
+      INPUT_ACTIVITY_WINDOW_DAYS: ${{ inputs.activity_window_days || '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate or publish discussion
+        run: node --import tsx src/discussion-writer-cli.ts
+
+      - name: Upload discussion preview artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discussion-preview
+          path: .ai/discussion-preview.md
+          if-no-files-found: ignore

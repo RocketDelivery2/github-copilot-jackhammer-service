@@ -1,7 +1,7 @@
 {
   "name": "github-copilot-jackhammer-service",
   "version": "0.1.0",
-  "description": "Full-autopilot GitHub Copilot orchestration service (JackHammer) — generates and manages prioritised Copilot coding-agent issue queues, handles active-work continuation, PR lifecycle, and queue rebalancing.",
+  "description": "Full-autopilot GitHub Copilot orchestration service (JackHammer) \u2014 generates and manages prioritised Copilot coding-agent issue queues, handles active-work continuation, PR lifecycle, and queue rebalancing.",
   "keywords": [
     "github-copilot",
     "copilot-agent",
@@ -31,7 +31,8 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "once": "tsx src/index.ts --once",
     "doctor": "tsx src/index.ts --doctor",
-    "repo:metadata": "bash scripts/set-repo-metadata.sh"
+    "repo:metadata": "bash scripts/set-repo-metadata.sh",
+    "discussion:writer": "node --import tsx src/discussion-writer-cli.ts"
   },
   "dependencies": {
     "@octokit/rest": "^21.1.1",
