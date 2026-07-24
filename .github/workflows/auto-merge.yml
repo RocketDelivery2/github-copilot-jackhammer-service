@@ -1,0 +1,62 @@
+name: auto-merge
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  create:
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  open-pr-on-branch:
+    # When a new branch is pushed, automatically open a PR targeting main
+    if: >-
+      github.event_name == 'create' &&
+      github.ref_type == 'branch' &&
+      github.ref_name != 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - name: Create PR if none exists
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          existing=$(gh pr list --head "${GITHUB_REF_NAME}" --base main --state open --json number --jq length)
+          if [ "$existing" = "0" ]; then
+            gh pr create \
+              --title "auto: ${GITHUB_REF_NAME}" \
+              --body "Auto-opened by auto-merge workflow." \
+              --base main \
+              --head "${GITHUB_REF_NAME}"
+          fi
+
+  approve-and-merge:
+    # Approve and enable squash auto-merge for every PR targeting main
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Approve PR
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr review --approve "${{ github.event.pull_request.html_url }}" \
+            || echo "Approval skipped (self-opened or already approved)."
+      - name: Enable squash auto-merge and delete branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge --auto --squash --delete-branch \
+            "${{ github.event.pull_request.html_url }}" \
+            || echo "Auto-merge already enabled or PR already merged."
