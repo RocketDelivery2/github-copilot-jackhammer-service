@@ -1,35 +1,32 @@
 # Idempotency Retention Policy
 
-- **Date:** July 25, 2026
+Date baseline: **July 25, 2026.**
 
 ## Result schema
 
 Each idempotency record stores:
-1. `idempotency_key`
-2. `result` (canonical JSON payload for exactly-once effect under at-least-once delivery)
-3. `recorded_at`
-4. Optional metadata: `provider`, `artifact_ref`, `status`
+- idempotency_key
+- conversation_id
+- operation_name
+- result_hash
+- created_at
+- expires_at
+- replay_count
 
-## TTL / retention window
+## TTL policy
 
-Recommended baseline TTL: **60 days**.
+- Default TTL: 30 days from `created_at`.
+- High-risk operations MAY use 90-day TTL via explicit policy override.
 
-Options:
-1. 30 days: lower storage, less long-tail duplicate protection.
-2. 60 days: balanced default.
-3. 90 days: stronger duplicate protection, higher storage/index cost.
+## Compaction
 
-## Compaction strategy
+- Daily compaction removes expired rows in bounded batches.
+- Compaction must preserve audit counters and emit deletion metrics.
+- Compaction must never remove unexpired records.
 
-1. Daily prune job deletes rows older than TTL.
-2. Chunked deletes to avoid long locks.
-3. Track prune duration, row count deleted, and index bloat.
-4. Prune job is resumable and idempotent.
+## Storage alarms
 
-## Storage growth alarms
-
-1. Warning at 70% of budgeted storage.
-2. Critical at 90% of budgeted storage.
-3. Alert on 2 consecutive prune-job failures.
-4. Alert on abnormal growth slope beyond expected traffic profile.
+- Alert when table size > 80% planned capacity.
+- Alert when compaction lag > 24h.
+- Alert when expired row backlog > 1M rows.
 

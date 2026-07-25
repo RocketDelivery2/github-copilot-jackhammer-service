@@ -1,28 +1,22 @@
 # Conversations Core Conformance Plan
 
-- **Date:** July 25, 2026
-- **Gate level:** MUST PASS for merge
-- **Terminology:** exactly-once effect under at-least-once delivery
+Date baseline: **July 25, 2026.**
 
-## Scenario map
+## MUST-PASS acceptance tests
 
-| Scenario | Setup | Action | Expected result | Assertions | Telemetry to verify |
-|---|---|---|---|---|---|
-| Concurrent append conflict | Two workers load same conversation at version `N` | Both append with `expectedVersion=N` | Exactly one success; one conflict with `actualVersion=N+1` | Single row at sequence `N+1`; conflict response includes actualVersion | `append_attempts`, `append_success`, `append_conflicts` |
-| Duplicate idempotency key | Same logical command delivered twice with same key | Execute handler twice | Exactly-once effect; second returns cached result | One provider call; one append effect; one idempotency row | `idempotency_hits`, `idempotency_misses`, `provider_calls`, `append_success` |
-| Stale fencing token renew | Lease transferred to newer token | Renew old token | Renewal rejected | Stale renew returns null/error; current lease unchanged | `lease_renew_attempts`, `lease_renew_reject_stale` |
-| Crash between artifact store and append | Artifact stored, append not committed | Retry same idempotency key command | Append completes using existing artifact, no provider re-call | Provider call count unchanged; artifact reference reused | `provider_calls`, `artifact_reuse`, `append_success` |
-| Stale expectedVersion append | Current version > expectedVersion | Append with stale expectedVersion | Conflict always returned | No silent success; no overwrite | `append_conflicts`, sequence gap checks |
-| Snapshot failure isolation | Append succeeds; snapshot write forced to fail | Run append + snapshot update | Append still successful | Event committed; snapshot failure isolated to projection path | `append_success`, `snapshot_failures`, projection lag |
+1. Event append preserves strict monotonic sequence per conversation.
+2. Duplicate idempotency key returns prior result without re-emitting effect.
+3. Lease acquisition and fencing token monotonicity prevent stale writer commits.
+4. Outbox row is created in same commit scope as `conversation_events`.
+5. Replay of already-processed dispatch key is side-effect free.
+6. Checkpoint recovery reconstructs state from event stream with no divergence.
 
-## Negative tests (must pass)
+## Negative tests (MUST-PASS)
 
-1. Stale `expectedVersion` never silently succeeds.
-2. Duplicate idempotency key never causes second provider/effect execution.
-3. Expired/stale fencing token renewal never succeeds.
-4. Snapshot failure never invalidates append success.
-
-## Merge gate
-
-This conformance suite is blocking. Any failure blocks merge until fixed and rerun.
+1. Reject write attempts with expired lease.
+2. Reject write attempts with non-current fencing token.
+3. Reject outbox dispatch records missing idempotent dispatch key.
+4. Reject malformed checkpoint payload/hash mismatch.
+5. Reject stale repository state packet for write-intent paths.
+6. Reject unauthorized mutation flag escalation in advisory conversation flows.
 
