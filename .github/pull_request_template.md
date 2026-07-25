@@ -1,17 +1,18 @@
 ## Summary
 
--
+Describe the change and scope.
 
 ## Validation
 
--
+- [ ] Local checks run
+- [ ] CI checks green
 
 ## Conversations Core Concurrency Gates
 
-- [ ] concurrent append: exactly one success, one conflict(actualVersion)
-- [ ] duplicate idempotency key: exactly-once effect under at-least-once delivery
-- [ ] stale fencing token renew rejected
-- [ ] crash between artifact store and append does not re-call provider
-- [ ] stale expectedVersion never silently succeeds
-- [ ] snapshot failure never invalidates append success
+- [ ] Event-store invariants documented
+- [ ] Provider-call-outside-transaction rule documented
+- [ ] Idempotency and fencing-token boundaries documented
+- [ ] Outbox relay contract documented
+- [ ] Retention/TTL/compaction/storage alarms documented
+- [ ] Observability metrics listed and latency targets marked as proposed until benchmarked.
 
