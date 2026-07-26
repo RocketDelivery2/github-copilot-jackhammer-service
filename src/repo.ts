@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import process from 'node:process';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import type { Ignore } from 'ignore';
@@ -39,10 +40,40 @@ async function execFile(command: string, args: string[], cwd: string): Promise<v
   });
 }
 
+type ArchiveCommand = {
+  command: string;
+  args: string[];
+};
+
+export function buildZipCommand(outPath: string, platform = process.platform): ArchiveCommand {
+  if (platform === 'win32') {
+    const escapedOutPath = outPath.replace(/'/g, "''");
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      `$archivePath = '${escapedOutPath}'`,
+      "if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }",
+      "$files = Get-ChildItem -LiteralPath . -Recurse -File | Where-Object { $_.FullName -notmatch '[\\\\/](\\.git|node_modules|dist|build)[\\\\/]' -and $_.Name -notlike '.env*' }",
+      "if ($files.Count -eq 0) { throw 'No files available to archive.' }",
+      'Compress-Archive -LiteralPath $files.FullName -DestinationPath $archivePath -CompressionLevel Optimal',
+    ].join('; ');
+
+    return {
+      command: 'powershell.exe',
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+    };
+  }
+
+  return {
+    command: 'zip',
+    args: ['-qr', outPath, '.', '-x', '.git/*', 'node_modules/*', 'dist/*', 'build/*', '.env*'],
+  };
+}
+
 export async function zipRepo(workDir: string, outPath: string): Promise<string> {
   await fs.mkdir(path.dirname(outPath), { recursive: true });
   await fs.rm(outPath, { force: true });
-  await execFile('zip', ['-qr', outPath, '.', '-x', '.git/*', 'node_modules/*', 'dist/*', 'build/*', '.env*'], workDir);
+  const archive = buildZipCommand(outPath);
+  await execFile(archive.command, archive.args, workDir);
   return outPath;
 }
 

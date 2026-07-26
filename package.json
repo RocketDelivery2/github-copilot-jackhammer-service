@@ -31,7 +31,7 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "once": "tsx src/index.ts --once",
     "doctor": "tsx src/index.ts --doctor",
-    "repo:metadata": "bash scripts/set-repo-metadata.sh",
+    "repo:metadata": "node scripts/set-repo-metadata.mjs",
     "discussion:writer": "node --import tsx src/discussion-writer-cli.ts"
   },
   "dependencies": {
@@ -49,5 +49,8 @@
     "@types/yargs": "^17.0.33",
     "tsx": "^4.22.4",
     "typescript": "^5.7.2"
+  },
+  "overrides": {
+    "brace-expansion": "^5.0.8"
   }
 }
