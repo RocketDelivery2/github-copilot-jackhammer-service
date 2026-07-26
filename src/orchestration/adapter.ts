@@ -119,6 +119,7 @@ export type AdaptivePreviewCommandCaptureOptions = {
   enabled: boolean;
   requests: readonly CommandExecutionRequest[];
   captureLimit?: number;
+  maxParallel?: number;
   executeCapture?: (request: CommandExecutionRequest) => Promise<CommandExecutionResult>;
   resultToExecutionEvents?: (result: CommandExecutionResult) => ExecutionEvent[];
   resultToQueueSignals?: (result: CommandExecutionResult) => QueueSignal[];
@@ -422,21 +423,44 @@ export async function captureAdaptivePreviewCommandRunnerFeedback(
   const executeCapture = options.executeCapture ?? executeCommandCapture;
   const resultToExecutionEvents = options.resultToExecutionEvents ?? commandResultToExecutionEvents;
   const resultToQueueSignals = options.resultToQueueSignals ?? commandResultToQueueSignals;
+  const maxParallel = Math.min(
+    boundedRequests.length,
+    normalizeCaptureParallelism(options.maxParallel ?? boundedRequests.length),
+  );
+
+  type CapturedRequestOutput = {
+    result: CommandExecutionResult;
+    events: ExecutionEvent[];
+    signals: QueueSignal[];
+  };
+  const capturedOutputs: CapturedRequestOutput[] = new Array(boundedRequests.length);
+  let nextIndex = 0;
+
+  await Promise.all(Array.from({ length: maxParallel }, async () => {
+    while (nextIndex < boundedRequests.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const request = boundedRequests[index];
+      if (!request) continue;
+
+      const result = await executeCapture(cloneCommandExecutionRequest(request));
+      capturedOutputs[index] = {
+        result: cloneCommandExecutionResult(result),
+        events: resultToExecutionEvents(result).map(cloneExecutionEvent),
+        signals: resultToQueueSignals(result).map(cloneQueueSignal),
+      };
+    }
+  }));
 
   const commandResults: CommandExecutionResult[] = [];
   const executionEvents: ExecutionEvent[] = [];
   const queueSignals: QueueSignal[] = [];
-
-  for (const request of boundedRequests) {
-    const result = await executeCapture(cloneCommandExecutionRequest(request));
-    commandResults.push(cloneCommandExecutionResult(result));
-
-    for (const event of resultToExecutionEvents(result)) {
-      executionEvents.push(cloneExecutionEvent(event));
-    }
-
-    for (const signal of resultToQueueSignals(result)) {
-      pushUniqueSignal(queueSignals, cloneQueueSignal(signal));
+  for (const captured of capturedOutputs) {
+    if (!captured) continue;
+    commandResults.push(captured.result);
+    executionEvents.push(...captured.events);
+    for (const signal of captured.signals) {
+      pushUniqueSignal(queueSignals, signal);
     }
   }
 
@@ -881,6 +905,14 @@ function normalizeCaptureLimit(limit: number): number {
   return limit;
 }
 
+function normalizeCaptureParallelism(parallelism: number): number {
+  if (!Number.isFinite(parallelism) || !Number.isInteger(parallelism) || parallelism <= 0) {
+    throw new RangeError('maxParallel must be a positive integer.');
+  }
+
+  return parallelism;
+}
+
 function cloneWorkItem(item: WorkItem): WorkItem {
   return {
     ...item,
@@ -1028,6 +1060,5 @@ function normalizeSkillBasePath(skillPath: string | undefined, skillName: string
 function isEnoent(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
-
 
 

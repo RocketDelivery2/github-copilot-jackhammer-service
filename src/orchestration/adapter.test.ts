@@ -232,6 +232,78 @@ describe('adaptive queue adapter', () => {
     assert.equal(capture.commandResults.length, 2);
   });
 
+  it('captures commands in bounded parallel while preserving request order', async () => {
+    const requests = [
+      { command: process.execPath, args: ['-e', 'process.stdout.write("one")'], workItemId: 'w1' },
+      { command: process.execPath, args: ['-e', 'process.stdout.write("two")'], workItemId: 'w2' },
+      { command: process.execPath, args: ['-e', 'process.stdout.write("three")'], workItemId: 'w3' },
+    ];
+
+    const started: string[] = [];
+    const deferredByWorkItemId = new Map<string, ReturnType<typeof createDeferred<CommandExecutionResult>>>();
+    for (const request of requests) {
+      deferredByWorkItemId.set(request.workItemId, createDeferred<CommandExecutionResult>());
+    }
+
+    const capturePromise = captureAdaptivePreviewCommandRunnerFeedback({
+      enabled: true,
+      requests,
+      maxParallel: 2,
+      executeCapture: async request => {
+        const workItemId = request.workItemId ?? 'unknown';
+        started.push(workItemId);
+        const deferred = deferredByWorkItemId.get(workItemId);
+        if (!deferred) {
+          throw new Error(`Missing deferred result for ${workItemId}`);
+        }
+        return deferred.promise;
+      },
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(started, ['w1', 'w2']);
+
+    deferredByWorkItemId.get('w2')?.resolve(buildCommandExecutionResult({
+      command: requests[1]!.command,
+      executable: requests[1]!.command,
+      args: [...(requests[1]!.args ?? [])],
+      stdout: 'second',
+      workItemId: 'w2',
+    }));
+    deferredByWorkItemId.get('w1')?.resolve(buildCommandExecutionResult({
+      command: requests[0]!.command,
+      executable: requests[0]!.command,
+      args: [...(requests[0]!.args ?? [])],
+      stdout: 'first',
+      workItemId: 'w1',
+    }));
+
+    deferredByWorkItemId.get('w3')?.resolve(buildCommandExecutionResult({
+      command: requests[2]!.command,
+      executable: requests[2]!.command,
+      args: [...(requests[2]!.args ?? [])],
+      stdout: 'third',
+      workItemId: 'w3',
+    }));
+
+    const capture = await capturePromise;
+    assert.deepEqual(started.slice(0, 2), ['w1', 'w2']);
+    assert.ok(started.includes('w3'));
+    assert.deepEqual(capture.commandResults.map(result => result.workItemId), ['w1', 'w2', 'w3']);
+  });
+
+  it('rejects non-positive maxParallel values', async () => {
+    await assert.rejects(
+      () => captureAdaptivePreviewCommandRunnerFeedback({
+        enabled: true,
+        requests: [{ command: process.execPath, args: ['-e', 'process.stdout.write("ok")'] }],
+        maxParallel: 0,
+      }),
+      /maxParallel must be a positive integer/,
+    );
+  });
+
   it('does not select preview skills while adaptive preview is disabled', () => {
     const skillIndex = createSkillMetadataIndex([
       {
@@ -1398,4 +1470,12 @@ function buildCommandExecutionResult(
   };
 }
 
-
+function createDeferred<T>() {
+  let resolve: (value: T | PromiseLike<T>) => void = () => {};
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}

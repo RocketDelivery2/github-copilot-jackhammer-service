@@ -26,6 +26,7 @@ describe('config', () => {
       assert.equal(parsed.ADAPTIVE_EVENT_JOURNAL_RETENTION, 200);
       assert.equal(parsed.ADAPTIVE_PREVIEW_CAPTURE_SOURCE, 'recent-results');
       assert.equal(parsed.ADAPTIVE_PREVIEW_CAPTURE_LIMIT, 3);
+      assert.equal(parsed.ADAPTIVE_PREVIEW_CAPTURE_PARALLELISM, 2);
       assert.equal(parsed.ADAPTIVE_PREVIEW_VALIDATION_PROBES, '');
       assert.equal(parsed.ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE, '');
       assert.equal(parsed.ADAPTIVE_PREVIEW_APPROVAL_STATE_FILE, '');
@@ -55,4 +56,3 @@ function restoreEnv(key: string, value: string | undefined): void {
 
   process.env[key] = value;
 }
-

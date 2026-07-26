@@ -37,6 +37,7 @@ const ConfigSchema = z.object({
   ADAPTIVE_EVENT_JOURNAL_RETENTION: z.coerce.number().int().nonnegative().default(200),
   ADAPTIVE_PREVIEW_CAPTURE_SOURCE: z.enum(['none', 'recent-results', 'validation-probes']).default('recent-results'),
   ADAPTIVE_PREVIEW_CAPTURE_LIMIT: z.coerce.number().int().nonnegative().max(20).default(3),
+  ADAPTIVE_PREVIEW_CAPTURE_PARALLELISM: z.coerce.number().int().positive().max(10).default(2),
   ADAPTIVE_PREVIEW_VALIDATION_PROBES: z.string().default(''),
   ADAPTIVE_PREVIEW_DECISION_INPUTS_FILE: z.string().default(''),
   ADAPTIVE_PREVIEW_APPROVAL_STATE_FILE: z.string().default(''),

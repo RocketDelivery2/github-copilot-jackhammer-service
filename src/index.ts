@@ -41,6 +41,7 @@ const workRoot = path.resolve(process.cwd(), '.work');
 const repoDir = path.join(workRoot, `${config.GITHUB_OWNER}-${config.GITHUB_REPO}`);
 const statePath = path.resolve(process.cwd(), config.STATE_FILE);
 const zipPath = path.resolve(process.cwd(), '.ai', 'jackhammer-repo-main.zip');
+let adaptivePreviewSkillMetadataIndexPromise: ReturnType<typeof loadAdaptivePreviewSkillMetadataIndex> | undefined;
 
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
@@ -303,6 +304,19 @@ async function loadAdaptivePreviewSkillMetadataIndex() {
   return createSkillMetadataIndex(sources);
 }
 
+async function getAdaptivePreviewSkillMetadataIndex() {
+  if (!adaptivePreviewSkillMetadataIndexPromise) {
+    adaptivePreviewSkillMetadataIndexPromise = loadAdaptivePreviewSkillMetadataIndex();
+  }
+
+  try {
+    return await adaptivePreviewSkillMetadataIndexPromise;
+  } catch (error) {
+    adaptivePreviewSkillMetadataIndexPromise = undefined;
+    throw error;
+  }
+}
+
 function buildAdaptivePreviewSkillTasks(
   state: QueueState,
   queueSignals: readonly { kind: string; message: string; workItemId?: string }[],
@@ -365,7 +379,7 @@ async function runOnce(): Promise<void> {
   }
 
   if (config.ADAPTIVE_QUEUE_ENABLED) {
-    const skillMetadataIndex = await loadAdaptivePreviewSkillMetadataIndex();
+    const skillMetadataIndex = await getAdaptivePreviewSkillMetadataIndex();
     const previewRequests = buildAdaptivePreviewCommandCaptureRequests({
       enabled: true,
       source: config.ADAPTIVE_PREVIEW_CAPTURE_SOURCE,
@@ -381,6 +395,7 @@ async function runOnce(): Promise<void> {
       enabled: true,
       requests: previewRequests,
       captureLimit: config.ADAPTIVE_PREVIEW_CAPTURE_LIMIT,
+      maxParallel: config.ADAPTIVE_PREVIEW_CAPTURE_PARALLELISM,
     });
     const previewSkillTasks = buildAdaptivePreviewSkillTasks(state, previewCapture.queueSignals);
     const skillSelections = selectAdaptivePreviewSkills({
@@ -430,7 +445,7 @@ async function runOnce(): Promise<void> {
       retentionLimit: config.ADAPTIVE_EVENT_JOURNAL_RETENTION,
     });
     if (previewCapture.commandResults.length > 0) {
-      console.log(`Adaptive queue preview captured ${previewCapture.commandResults.length} command result(s).`);
+      console.log(`Adaptive queue preview captured ${previewCapture.commandResults.length} command result(s) using up to ${config.ADAPTIVE_PREVIEW_CAPTURE_PARALLELISM} parallel worker(s).`);
     }
     if (journalRecords.length > 0) {
       console.log(`Adaptive queue preview appended ${journalRecords.length} journal record(s).`);
@@ -581,4 +596,3 @@ main().catch(err => {
   console.error(err);
   process.exit(1);
 });
-
