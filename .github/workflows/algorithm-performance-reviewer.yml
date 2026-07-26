@@ -1,0 +1,80 @@
+name: algorithm-performance-reviewer
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_path:
+        description: Path to scan for algorithm/data-structure hotspots
+        required: false
+        default: src
+        type: string
+      max_findings:
+        description: Maximum number of recommendations in the report
+        required: false
+        default: '20'
+        type: string
+      publish_issue:
+        description: Publish report as an issue
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: '5 2,8,14,20 * * *'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: algorithm-performance-reviewer-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  algorithm-performance-reviewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ALGO_REVIEWER_TARGET_PATH: ${{ inputs.target_path || vars.ALGO_REVIEWER_TARGET_PATH || 'src' }}
+      ALGO_REVIEWER_MAX_FINDINGS: ${{ inputs.max_findings || vars.ALGO_REVIEWER_MAX_FINDINGS || '20' }}
+      ALGO_REVIEWER_OUTPUT_MARKDOWN: .ai/algorithm-performance-review.md
+      ALGO_REVIEWER_OUTPUT_JSON: .ai/algorithm-performance-review.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate algorithm performance review
+        run: node --import tsx src/algorithm-performance-reviewer-cli.ts
+
+      - name: Upload review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: algorithm-performance-review
+          path: |
+            .ai/algorithm-performance-review.md
+            .ai/algorithm-performance-review.json
+          if-no-files-found: error
+
+      - name: Publish issue with recommendations
+        if: >
+          always() &&
+          (github.event_name == 'workflow_dispatch' && inputs.publish_issue == true) ||
+          (github.event_name != 'workflow_dispatch' && vars.ALGO_REVIEWER_PUBLISH_ISSUE == 'true')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Algorithm performance review: ${{ github.run_id }}" \
+            --body-file .ai/algorithm-performance-review.md \
+            --label performance \
+            --label automation

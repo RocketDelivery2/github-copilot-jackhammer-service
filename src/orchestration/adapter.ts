@@ -520,8 +520,11 @@ export async function buildAdaptivePreviewSkillExecutionPlans(
 
   const loadDocument = options.loadSkillDocument ?? loadSkillDocumentFromFile;
   const plans: SkillExecutionPlan[] = [];
+  const metadataBySkillName = new Map(
+    options.skillIndex.skills.map(skill => [skill.name, skill]),
+  );
   for (const selection of options.skillSelections.slice(0, maxPlans)) {
-    const metadata = options.skillIndex.skills.find(skill => skill.name === selection.skillName);
+    const metadata = metadataBySkillName.get(selection.skillName);
     if (!metadata?.skillPath) {
       continue;
     }
@@ -625,16 +628,19 @@ export async function loadAdaptivePreviewDecisionInputs(
 
 export function mapRuntimeInputsToWorkItems(inputs: AdaptiveQueueRuntimeInputs): WorkItem[] {
   const workItems: WorkItem[] = [];
+  const seenWorkItemIds = new Set<string>();
 
   if (inputs.activeWorkItem) {
-    workItems.push(mapActiveWorkItemToWorkItem(inputs.activeWorkItem));
+    const activeWorkItem = mapActiveWorkItemToWorkItem(inputs.activeWorkItem);
+    workItems.push(activeWorkItem);
+    seenWorkItemIds.add(activeWorkItem.id);
   }
 
   for (const item of inputs.commandQueue ?? []) {
     const workItem = mapCommandQueueItemToWorkItem(item);
-    if (!workItems.some(existing => existing.id === workItem.id)) {
-      workItems.push(workItem);
-    }
+    if (seenWorkItemIds.has(workItem.id)) continue;
+    seenWorkItemIds.add(workItem.id);
+    workItems.push(workItem);
   }
 
   return workItems;
@@ -1028,6 +1034,5 @@ function normalizeSkillBasePath(skillPath: string | undefined, skillName: string
 function isEnoent(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
-
 
 

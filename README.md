@@ -219,6 +219,40 @@ node --import tsx src/discussion-writer-cli.ts
 - If publication fails, state is not marked as published.
 - If duplicate detection is too strict/loose, adjust `DISCUSSIONS_MIN_MATERIAL_CHANGES` and `DISCUSSIONS_ACTIVITY_WINDOW_DAYS`.
 
+## Algorithm performance reviewer automation
+
+JackHammer includes a scheduled algorithm/performance reviewer lane that scans for high-confidence Big-O improvement opportunities and emits PR-ready refactor recommendations.
+
+### What it does
+
+- Scans TypeScript source for nested-loop and repeated linear-search hotspots
+- Prioritizes findings by expected impact
+- Writes actionable recommendations with complexity deltas and refactor sketches
+- Publishes artifacts to:
+  - `.ai/algorithm-performance-review.md`
+  - `.ai/algorithm-performance-review.json`
+- Optionally opens a GitHub issue with the generated recommendations
+
+### Workflow
+
+Use `.github/workflows/algorithm-performance-reviewer.yml` for:
+- `workflow_dispatch`
+- four scheduled runs per day
+
+Default controls:
+
+```dotenv
+ALGO_REVIEWER_TARGET_PATH=src
+ALGO_REVIEWER_MAX_FINDINGS=20
+ALGO_REVIEWER_PUBLISH_ISSUE=false
+```
+
+Manual run:
+
+```bash
+npm run reviewer:algorithm-performance
+```
+
 ## Behaviour notes
 
 ### Brain fallback (`BRAIN_FALLBACK_ENABLED`)

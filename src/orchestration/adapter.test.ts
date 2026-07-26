@@ -112,6 +112,33 @@ describe('adaptive queue adapter', () => {
     ]);
   });
 
+  it('deduplicates queue entries that resolve to the same work item id', () => {
+    const duplicateInputs: AdaptiveQueueRuntimeInputs = {
+      commandQueue: [
+        {
+          hash: 'abc123',
+          title: 'First',
+          priority: 'medium',
+          issueNumber: 88,
+          issueUrl: 'https://github.example/issues/88',
+          prompt: 'First command',
+        },
+        {
+          hash: 'def456',
+          title: 'Second duplicate',
+          priority: 'high',
+          issueNumber: 88,
+          issueUrl: 'https://github.example/issues/88',
+          prompt: 'Second command',
+        },
+      ],
+    };
+
+    const workItems = mapRuntimeInputsToWorkItems(duplicateInputs);
+    assert.equal(workItems.length, 1);
+    assert.equal(workItems[0]?.id, 'issue:88');
+  });
+
   it('disabled preview yields no capture requests regardless of source', () => {
     const recent = buildAdaptivePreviewCommandCaptureRequests({
       enabled: false,
@@ -597,6 +624,60 @@ keywords: [error, failure, repair]
     assert.equal(first[0]?.trustPolicySummary.scriptsAutoExecutable, false);
     assert.equal(first[0]?.trustPolicySummary.scriptsRequireHumanApproval, true);
     assert.equal(loadCalls.length >= 2, true);
+  });
+
+  it('skips selections whose skill metadata is not indexed', async () => {
+    const skillIndex = createSkillMetadataIndex([{
+      skillPath: 'skills/validation/skill.md',
+      markdown: `---
+name: validation
+description: Validate code changes.
+version: 1.0.0
+risk: low
+allowedTools: [npm.cmd]
+resourceHints: [package.json]
+keywords: [validation]
+---
+`,
+    }]);
+
+    const plans = await buildAdaptivePreviewSkillExecutionPlans({
+      enabled: true,
+      skillSelections: [{
+        taskId: 'task:missing',
+        skillName: 'non-existent-skill',
+        score: 5,
+        reasons: ['keyword:missing'],
+        rank: 1,
+        risk: 'low',
+        allowedTools: [],
+        trustPolicySummary: {
+          instructionsReadAllowed: true,
+          referencesReadAllowed: true,
+          assetsReadAllowed: true,
+          scriptsRequireHumanApproval: true,
+          scriptsAutoExecutable: false,
+        },
+      }],
+      skillIndex,
+      maxPlans: 5,
+      maxStepsPerPlan: 3,
+      loadSkillDocument: async () => ({
+        metadata: {
+          name: 'validation',
+          description: 'Validate code changes.',
+          version: '1.0.0',
+          risk: 'low',
+          allowedTools: ['npm.cmd'],
+          resourceHints: [],
+          keywords: [],
+          skillPath: 'skills/validation/skill.md',
+        },
+        body: '1. Run npm.cmd test',
+      }),
+    });
+
+    assert.deepEqual(plans, []);
   });
 
   it('captures preview skill execution plans as journal records', async () => {
@@ -1397,5 +1478,3 @@ function buildCommandExecutionResult(
     workItemId: override.workItemId,
   };
 }
-
-

@@ -11,6 +11,7 @@ export interface CodexReviewerPromptInventoryItem {
 export const reviewerPromptFilenames = [
   "project-monitor.md",
   "architecture-reviewer.md",
+  "algorithm-performance-reviewer.md",
   "safety-test-reviewer.md",
   "security-reviewer.md",
   "dependency-reviewer.md",
@@ -24,6 +25,7 @@ export const reviewerPromptFilenames = [
 const purposeById: Record<string, string> = {
   "project-monitor": "Tracks project state, health, and next work signals.",
   "architecture-reviewer": "Reviews architecture, boundaries, and maintainability.",
+  "algorithm-performance-reviewer": "Reviews algorithm/data-structure efficiency and Big-O risks.",
   "safety-test-reviewer": "Reviews test safety, edge cases, and validation risk.",
   "security-reviewer": "Reviews security posture and sensitive change risk.",
   "dependency-reviewer": "Reviews dependency, supply-chain, and package risk.",
