@@ -2,7 +2,7 @@ name: dependabot-auto-approve
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
 
 permissions:
   pull-requests: write
@@ -11,10 +11,120 @@ jobs:
   auto-approve:
     name: Auto-approve dependabot PRs
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
     steps:
+      - name: Evaluate dependabot approval gates
+        id: gates
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          EXPECTED_REPO: RocketDelivery2/github-copilot-jackhammer-service
+          EVENT_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          GATE_PASS=true
+          GATE_LOG=""
+
+          append_gate() {
+            GATE_LOG="${GATE_LOG}| $1 | $2 | $3 |\n"
+          }
+
+          PR_JSON="$(gh pr view "$PR_URL" --json state,isDraft,headRefName,author,labels,reviews)"
+          PR_STATE="$(echo "$PR_JSON" | jq -r '.state')"
+          PR_DRAFT="$(echo "$PR_JSON" | jq -r '.isDraft')"
+          HEAD_REF="$(echo "$PR_JSON" | jq -r '.headRefName')"
+          PR_AUTHOR="$(echo "$PR_JSON" | jq -r '.author.login')"
+          DENY_COUNT="$(echo "$PR_JSON" | jq '[.labels[]? | .name | select(. == "security" or . == "breaking-change" or . == "do-not-merge" or . == "no-auto-merge")] | length')"
+          APPROVAL_COUNT="$(echo "$PR_JSON" | jq '[.reviews[]? | select(.author.login == "github-actions[bot]" and .state == "APPROVED")] | length')"
+
+          if [ "$EVENT_REPO" = "$EXPECTED_REPO" ]; then
+            append_gate "Gate 1: repository match" "PASS" "workflow executing on expected repository"
+          else
+            GATE_PASS=false
+            append_gate "Gate 1: repository match" "BLOCKED" "repository mismatch (${EVENT_REPO})"
+          fi
+
+          if [ "$PR_STATE" = "OPEN" ] && [ "$PR_DRAFT" = "false" ]; then
+            append_gate "Gate 2: open PR check" "PASS" "pull request is open and ready for review"
+          else
+            GATE_PASS=false
+            append_gate "Gate 2: open PR check" "BLOCKED" "pull request is not open-and-ready"
+          fi
+
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            append_gate "Gate 3: actor check" "PASS" "pull request author is dependabot[bot]"
+          else
+            GATE_PASS=false
+            append_gate "Gate 3: actor check" "BLOCKED" "pull request author is ${PR_AUTHOR}"
+          fi
+
+          case "$HEAD_REF" in
+            dependabot/*)
+              append_gate "Gate 4: branch scope" "PASS" "head branch is within dependabot/*"
+              ;;
+            *)
+              GATE_PASS=false
+              append_gate "Gate 4: branch scope" "BLOCKED" "head branch ${HEAD_REF} is outside dependabot/*"
+              ;;
+          esac
+
+          if [ "$DENY_COUNT" -eq 0 ]; then
+            append_gate "Gate 5: deny labels" "PASS" "no deny labels present"
+          else
+            GATE_PASS=false
+            append_gate "Gate 5: deny labels" "BLOCKED" "deny label present (security/breaking-change/do-not-merge/no-auto-merge)"
+          fi
+
+          DO_APPROVE=false
+          IDEMPOTENCY_NOTE="approval missing; approval will be created if gates pass"
+          if [ "$APPROVAL_COUNT" -gt 0 ]; then
+            IDEMPOTENCY_NOTE="github-actions[bot] approval already present; workflow will not duplicate approval"
+          fi
+
+          if [ "$GATE_PASS" = "true" ] && [ "$APPROVAL_COUNT" -eq 0 ]; then
+            DO_APPROVE=true
+          fi
+
+          echo "gate_pass=${GATE_PASS}" >> "$GITHUB_OUTPUT"
+          echo "do_approve=${DO_APPROVE}" >> "$GITHUB_OUTPUT"
+          echo "idempotency_note=${IDEMPOTENCY_NOTE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "gate_log<<EOF"
+            printf "$GATE_LOG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write approval decision summary
+        if: always()
+        env:
+          GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
+          DO_APPROVE: ${{ steps.gates.outputs.do_approve }}
+          GATE_LOG: ${{ steps.gates.outputs.gate_log }}
+          IDEMPOTENCY_NOTE: ${{ steps.gates.outputs.idempotency_note }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "## Dependabot auto-approve evaluation -- PR #${PR_NUMBER}"
+            echo ""
+            if [ "$GATE_PASS" = "true" ]; then
+              if [ "$DO_APPROVE" = "true" ]; then
+                echo "Decision: ALLOW -- gates passed; workflow will submit one approval."
+              else
+                echo "Decision: NOOP -- gates passed but approval already exists."
+              fi
+            else
+              echo "Decision: BLOCK -- one or more safety gates failed."
+            fi
+            echo ""
+            echo "| Gate | Result | Reason |"
+            echo "|------|--------|--------|"
+            printf "$GATE_LOG"
+            echo ""
+            echo "Idempotency: ${IDEMPOTENCY_NOTE}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Auto-approve dependabot PR
-        run: gh pr review --approve "$PR_URL" || echo "Already approved or approval not applicable; skipping."
+        if: steps.gates.outputs.do_approve == 'true'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr review --approve "$PR_URL"
