@@ -14,6 +14,7 @@ They are intended to support small, validated PRs by making review expectations 
 | --- | --- |
 | `project-monitor.md` | Read-only repository health and validation monitor. |
 | `architecture-reviewer.md` | Architecture and design review for scope, coupling, maintainability, and production safety. |
+| `best-practices-reviewer.md` | Best-practices review for deterministic automation, workflow guardrails, and validation discipline. |
 | `safety-test-reviewer.md` | Safety and test review for validation gaps and guardrail coverage. |
 | `security-reviewer.md` | Security review for secrets, auth, permissions, shell execution, and unsafe automation. |
 | `dependency-reviewer.md` | Dependency and supply-chain review for package, lockfile, workflow, and Docker risk. |
@@ -41,6 +42,7 @@ For a normal PR review:
 | Change type | Prompt to use first | Follow-up prompt |
 | --- | --- | --- |
 | Runtime architecture change | `architecture-reviewer.md` | `regression-test-planner.md` |
+| Workflow/automation orchestration change | `best-practices-reviewer.md` | `architecture-reviewer.md` |
 | Test or validation change | `safety-test-reviewer.md` | `regression-test-planner.md` |
 | Secret, auth, shell, or permission change | `security-reviewer.md` | `merge-governor.md` |
 | Dependency, workflow, package, or Docker change | `dependency-reviewer.md` | `security-reviewer.md` |
@@ -93,6 +95,20 @@ The expected progression is:
 4. Add safe prompt-loading or prompt-index utilities.
 5. Add runtime automation only behind explicit disabled-by-default flags.
 6. Require tests for every new automation boundary.
+
+## Scheduled orchestration workflow
+
+The repository includes a deterministic, auditable reviewer orchestration workflow at `.github/workflows/scheduled-review-orchestration.yml`.
+
+Key behavior:
+
+1. Runs several times per day and supports manual dispatch.
+2. Enforces guardrails (allowed trigger, default-branch execution, required prompt files).
+3. Coordinates reviewer bundles in deterministic order:
+   1. `architecture-reviewer.md`
+   2. `best-practices-reviewer.md`
+4. Writes a structured step summary with gate outcomes and generated bundle metadata.
+5. Uploads run artifacts under `.ai/reviewer-orchestration/<run-id>-<attempt>/` for auditability.
 
 ## Next recommended implementation work
 
