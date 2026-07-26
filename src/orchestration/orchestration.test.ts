@@ -131,6 +131,29 @@ describe('orchestration rebalance', () => {
     assert.equal(rebalanced[0]?.id, 'conversation:agent_question:feature');
     assert.equal(rebalanced[0]?.kind, 'conversation');
   });
+
+  it('deduplicates equivalent signals before rebalance scoring', () => {
+    const queue = [
+      item({ id: 'feature', title: 'Continue feature', kind: 'feature' }),
+    ];
+    const explicitSignals: QueueSignal[] = [{
+      kind: 'missing_tests',
+      severity: 'warning',
+      message: 'Missing tests were detected.',
+      workItemId: 'feature',
+    }];
+    const events = [{
+      workItemId: 'feature',
+      kind: 'stderr' as const,
+      stderr: 'No tests found for this change.',
+    }];
+
+    const rebalanced = rebalanceWorkItems(queue, events, explicitSignals);
+    const conversationItems = rebalanced.filter(workItem => workItem.kind === 'conversation');
+
+    assert.equal(conversationItems.length, 1);
+    assert.equal(conversationItems[0]?.id, 'conversation:missing_tests:feature');
+  });
 });
 
 describe('orchestration parallelism', () => {

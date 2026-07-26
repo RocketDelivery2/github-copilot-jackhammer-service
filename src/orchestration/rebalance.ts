@@ -5,6 +5,7 @@ type ScoreContext = {
   signals: readonly QueueSignal[];
   completedIds: ReadonlySet<string>;
   hasActiveFailure: boolean;
+  signalAdjustments?: ReadonlyMap<string, number>;
 };
 
 const FAILURE_SIGNAL_KINDS = new Set<QueueSignalKind>([
@@ -22,18 +23,22 @@ export function rebalanceWorkItems(
   const items = workItems.map(cloneWorkItem);
 
   promoteOrInsertFailureFix(items, allSignals);
-  insertConversationItems(items, allSignals);
+  const itemIds = new Set(items.map(item => item.id));
+  insertConversationItems(items, allSignals, itemIds);
 
   const completedIds = new Set(items.filter(item => item.status === 'completed').map(item => item.id));
+  const { signalAdjustments, hasActiveFailure } = buildSignalAdjustments(allSignals);
   const context: ScoreContext = {
     signals: allSignals,
     completedIds,
-    hasActiveFailure: allSignals.some(signal => FAILURE_SIGNAL_KINDS.has(signal.kind)),
+    hasActiveFailure,
+    signalAdjustments,
   };
   const originalOrder = new Map(items.map((item, index) => [item.id, index]));
+  const scores = new Map(items.map(item => [item.id, scoreWorkItem(item, context)]));
 
   return [...items].sort((a, b) => {
-    const scoreDiff = scoreWorkItem(b, context) - scoreWorkItem(a, context);
+    const scoreDiff = (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0);
     if (scoreDiff !== 0) return scoreDiff;
     return (originalOrder.get(a.id) ?? 0) - (originalOrder.get(b.id) ?? 0);
   });
@@ -46,6 +51,7 @@ export function scoreWorkItem(
   const signals = context.signals ?? [];
   const completedIds = context.completedIds ?? new Set<string>();
   const hasActiveFailure = context.hasActiveFailure ?? signals.some(signal => FAILURE_SIGNAL_KINDS.has(signal.kind));
+  const signalAdjustments = context.signalAdjustments;
 
   let score = 0;
 
@@ -69,11 +75,15 @@ export function scoreWorkItem(
   if (hasActiveFailure && isFeatureOrRefactorWork(item)) score -= 150;
   if (!dependenciesComplete(item, completedIds)) score -= 500;
 
-  for (const signal of signals) {
-    const targetId = signal.targetItemId ?? signal.workItemId;
-    if (signal.kind === 'urgent' && targetId === item.id) score += 1200;
-    if (signal.kind === 'blocker' && targetId === item.id) score -= 2500;
-    if (FAILURE_SIGNAL_KINDS.has(signal.kind) && item.id === failureFixId(signal)) score += 2000;
+  if (signalAdjustments) {
+    score += signalAdjustments.get(item.id) ?? 0;
+  } else {
+    for (const signal of signals) {
+      const targetId = signal.targetItemId ?? signal.workItemId;
+      if (signal.kind === 'urgent' && targetId === item.id) score += 1200;
+      if (signal.kind === 'blocker' && targetId === item.id) score -= 2500;
+      if (FAILURE_SIGNAL_KINDS.has(signal.kind) && item.id === failureFixId(signal)) score += 2000;
+    }
   }
 
   return score;
@@ -110,11 +120,16 @@ function promoteOrInsertFailureFix(items: WorkItem[], signals: readonly QueueSig
   });
 }
 
-function insertConversationItems(items: WorkItem[], signals: readonly QueueSignal[]): void {
+function insertConversationItems(
+  items: WorkItem[],
+  signals: readonly QueueSignal[],
+  itemIds: Set<string>,
+): void {
   for (const signal of signals) {
     const conversation = createConversationWorkItem(signal);
     if (!conversation) continue;
-    if (items.some(item => item.id === conversation.id)) continue;
+    if (itemIds.has(conversation.id)) continue;
+    itemIds.add(conversation.id);
     items.push(conversation);
   }
 }
@@ -152,16 +167,44 @@ function cloneWorkItem(item: WorkItem): WorkItem {
 }
 
 function mergeSignals(signals: QueueSignal[]): QueueSignal[] {
-  const merged: QueueSignal[] = [];
+  const merged = new Map<string, QueueSignal>();
 
   for (const signal of signals) {
-    const exists = merged.some(existing =>
-      existing.kind === signal.kind
-      && existing.workItemId === signal.workItemId
-      && existing.targetItemId === signal.targetItemId
-    );
-    if (!exists) merged.push(signal);
+    const key = signalKey(signal);
+    if (!merged.has(key)) merged.set(key, signal);
   }
 
-  return merged;
+  return [...merged.values()];
+}
+
+function buildSignalAdjustments(signals: readonly QueueSignal[]): {
+  signalAdjustments: ReadonlyMap<string, number>;
+  hasActiveFailure: boolean;
+} {
+  const signalAdjustments = new Map<string, number>();
+  let hasActiveFailure = false;
+
+  for (const signal of signals) {
+    const targetId = signal.targetItemId ?? signal.workItemId;
+    if (signal.kind === 'urgent' && targetId) addSignalAdjustment(signalAdjustments, targetId, 1200);
+    if (signal.kind === 'blocker' && targetId) addSignalAdjustment(signalAdjustments, targetId, -2500);
+    if (FAILURE_SIGNAL_KINDS.has(signal.kind)) {
+      hasActiveFailure = true;
+      addSignalAdjustment(signalAdjustments, failureFixId(signal), 2000);
+    }
+  }
+
+  return { signalAdjustments, hasActiveFailure };
+}
+
+function addSignalAdjustment(adjustments: Map<string, number>, itemId: string, amount: number): void {
+  adjustments.set(itemId, (adjustments.get(itemId) ?? 0) + amount);
+}
+
+function signalKey(signal: QueueSignal): string {
+  return [
+    signal.kind,
+    signal.workItemId ?? '',
+    signal.targetItemId ?? '',
+  ].join('\u0000');
 }
