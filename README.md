@@ -38,6 +38,15 @@ OpenAI/ChatGPT reads the latest repo snapshot
 
 ---
 
+## Automation runbooks
+
+- [Scheduled run troubleshooting](./docs/operations/scheduled-run-troubleshooting.md)
+- [Automation governance notes](./docs/operations/automation-governance.md)
+
+These notes cover the expected failure modes for scheduled runs and the operations this repo intentionally keeps manual.
+
+---
+
 ## Quick start
 
 ```bash
