@@ -18,6 +18,7 @@ export type SkillDocument = {
 
 export type SkillMetadataIndex = {
   skills: SkillMetadata[];
+  searchEntries: readonly SkillSearchEntry[];
   generatedAt: string;
 };
 
@@ -32,6 +33,14 @@ export type SkillMatch = {
   skill: SkillMetadata;
   score: number;
   reasons: string[];
+};
+
+export type SkillSearchEntry = {
+  skill: SkillMetadata;
+  normalizedName: string;
+  normalizedKeywords: readonly string[];
+  normalizedDescriptionTokens: readonly string[];
+  normalizedAllowedTools: readonly string[];
 };
 
 export type SkillResourceKind = 'instructions' | 'reference' | 'asset' | 'script' | 'unknown';

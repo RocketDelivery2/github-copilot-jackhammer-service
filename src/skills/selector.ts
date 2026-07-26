@@ -1,4 +1,4 @@
-import type { SkillMatch, SkillMetadata, SkillMetadataIndex, SkillTaskLike } from './types.js';
+import type { SkillMatch, SkillMetadataIndex, SkillSearchEntry, SkillTaskLike } from './types.js';
 import { getSkillByName } from './registry.js';
 
 export type SkillSelectionOptions = {
@@ -12,8 +12,8 @@ export function selectSkillsForTask(
   options: SkillSelectionOptions = {},
 ): SkillMatch[] {
   const text = normalizeTaskText(task);
-  const matches = index.skills
-    .map(skill => scoreSkill(skill, text))
+  const matches = index.searchEntries
+    .map(entry => scoreSkill(entry, text))
     .filter((entry): entry is SkillMatch => entry.score > 0)
     .sort((left, right) => {
       if (right.score !== left.score) {
@@ -43,37 +43,37 @@ export function selectSkillsForTask(
   }];
 }
 
-function scoreSkill(skill: SkillMetadata, taskText: string): SkillMatch {
+function scoreSkill(entry: SkillSearchEntry, taskText: string): SkillMatch {
   let score = 0;
   const reasons: string[] = [];
 
-  if (containsPhrase(taskText, skill.name)) {
+  if (containsNormalizedPhrase(taskText, entry.normalizedName)) {
     score += 6;
-    reasons.push(`name:${skill.name}`);
+    reasons.push(`name:${entry.skill.name}`);
   }
 
-  for (const keyword of skill.keywords) {
-    if (containsPhrase(taskText, keyword)) {
+  for (const keyword of entry.normalizedKeywords) {
+    if (containsNormalizedPhrase(taskText, keyword)) {
       score += 4;
       reasons.push(`keyword:${keyword}`);
     }
   }
 
-  for (const token of tokenize(skill.description)) {
-    if (containsPhrase(taskText, token)) {
+  for (const token of entry.normalizedDescriptionTokens) {
+    if (containsNormalizedPhrase(taskText, token)) {
       score += 2;
       reasons.push(`description:${token}`);
     }
   }
 
-  for (const tool of skill.allowedTools) {
-    if (containsPhrase(taskText, tool)) {
+  for (const tool of entry.normalizedAllowedTools) {
+    if (containsNormalizedPhrase(taskText, tool)) {
       score += 1;
       reasons.push(`tool:${tool}`);
     }
   }
 
-  return { skill, score, reasons };
+  return { skill: entry.skill, score, reasons };
 }
 
 function normalizeTaskText(task: SkillTaskLike): string {
@@ -82,15 +82,6 @@ function normalizeTaskText(task: SkillTaskLike): string {
     .toLowerCase();
 }
 
-function containsPhrase(haystack: string, phrase: string): boolean {
-  const needle = phrase.trim().toLowerCase();
-  return needle.length > 0 && haystack.includes(needle);
-}
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9-]+/g)
-    .map(token => token.trim())
-    .filter(token => token.length >= 4);
+function containsNormalizedPhrase(haystack: string, phrase: string): boolean {
+  return phrase.length > 0 && haystack.includes(phrase);
 }

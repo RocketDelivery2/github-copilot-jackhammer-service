@@ -75,6 +75,23 @@ describe('deterministic skill selection', () => {
     assert.equal(matches[0].skill.name, 'validation');
   });
 
+  it('matches validation skill through mixed-case task text without changing ranking', async () => {
+    const index = createSkillMetadataIndex([
+      { skillPath: 'skills/repo-inspection/skill.md', markdown: await readSkillMarkdown('repo-inspection') },
+      { skillPath: 'skills/typescript-patch/skill.md', markdown: await readSkillMarkdown('typescript-patch') },
+      { skillPath: 'skills/validation/skill.md', markdown: await readSkillMarkdown('validation') },
+      { skillPath: 'skills/error-recovery/skill.md', markdown: await readSkillMarkdown('error-recovery') },
+    ]);
+
+    const matches = selectSkillsForTask(index, {
+      title: 'Please RUN the Test / Build / LINT validation pass',
+      description: 'Need a validation summary after PATCH.',
+    });
+
+    assert.ok(matches.length > 0);
+    assert.equal(matches[0].skill.name, 'validation');
+  });
+
   it('returns no skills for unknown tasks by default', async () => {
     const index = createSkillMetadataIndex([
       { skillPath: 'skills/repo-inspection/skill.md', markdown: await readSkillMarkdown('repo-inspection') },
