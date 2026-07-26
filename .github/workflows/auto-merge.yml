@@ -28,14 +28,63 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
+
+      - name: Preflight create trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "create" ]; then
+            echo "auto-merge: expected create trigger but received $EVENT_NAME."
+            exit 64
+          fi
+          if [ "$REF_TYPE" != "branch" ]; then
+            echo "auto-merge: expected branch create trigger but received ref type $REF_TYPE."
+            exit 64
+          fi
+          if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "main" ]; then
+            echo "auto-merge: expected repository default branch main but received $DEFAULT_BRANCH."
+            exit 64
+          fi
+
       - name: Create draft PR if none exists
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          existing=$(gh pr list --head "${GITHUB_REF_NAME}" --base main --state open --json number --jq length)
+          set -euo pipefail
+          is_transient_gh_error() {
+            printf '%s' "$1" | grep -Eiq 'ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|temporary failure|rate limit|502|503|504'
+          }
+
+          retry_gh() {
+            attempts=3
+            delay=2
+            attempt=1
+            while true; do
+              if output="$("$@" 2>&1)"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if is_transient_gh_error "$output" && [ "$attempt" -lt "$attempts" ]; then
+                echo "Transient GitHub CLI error (attempt $attempt/$attempts); retrying in ${delay}s..." >&2
+                sleep "$delay"
+                delay=$((delay * 2))
+                attempt=$((attempt + 1))
+                continue
+              fi
+              printf '%s\n' "$output" >&2
+              return "$status"
+            done
+          }
+
+          existing=$(retry_gh gh pr list --head "${GITHUB_REF_NAME}" --base main --state open --json number --jq length)
           if [ "$existing" = "0" ]; then
-            gh pr create \
+            retry_gh gh pr create \
               --title "auto: ${GITHUB_REF_NAME}" \
               --body "Auto-opened by auto-merge workflow. **This PR is a DRAFT.**
 
@@ -56,6 +105,26 @@ Auto-merge will NOT fire while this PR is in draft state." \
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - name: Preflight pull_request trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "auto-merge: expected pull_request trigger but received $EVENT_NAME."
+            exit 64
+          fi
+          if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "main" ]; then
+            echo "auto-merge: expected repository default branch main but received $DEFAULT_BRANCH."
+            exit 64
+          fi
+          if [ -n "$DEFAULT_BRANCH" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "auto-merge: expected PR target branch $DEFAULT_BRANCH but received $BASE_REF."
+            exit 64
+          fi
+
       - name: Evaluate safety gates
         id: gates
         env:
@@ -77,7 +146,7 @@ Auto-merge will NOT fire while this PR is in draft state." \
           fi
 
           # Gate 2: explicit allow - label or allowed bot actor
-          LABELS_JSON=$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name]')
+          LABELS_JSON=$(retry_gh gh pr view "$PR_URL" --json labels --jq '[.labels[].name]')
           HAS_LABEL=$(echo "$LABELS_JSON" | jq 'contains(["auto-merge"])')
 
           ACTOR_ALLOWED=false
@@ -134,6 +203,33 @@ Auto-merge will NOT fire while this PR is in draft state." \
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr merge --auto --squash --delete-branch \
-            "${{ github.event.pull_request.html_url }}" \
-            || echo "Auto-merge already enabled or PR already merged."
+          set -euo pipefail
+          is_transient_gh_error() {
+            printf '%s' "$1" | grep -Eiq 'ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|temporary failure|rate limit|502|503|504'
+          }
+
+          retry_gh() {
+            attempts=3
+            delay=2
+            attempt=1
+            while true; do
+              if output="$("$@" 2>&1)"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if is_transient_gh_error "$output" && [ "$attempt" -lt "$attempts" ]; then
+                echo "Transient GitHub CLI error (attempt $attempt/$attempts); retrying in ${delay}s..." >&2
+                sleep "$delay"
+                delay=$((delay * 2))
+                attempt=$((attempt + 1))
+                continue
+              fi
+              printf '%s\n' "$output" >&2
+              return "$status"
+            done
+          }
+
+          retry_gh gh pr merge --auto --squash --delete-branch \
+            "${{ github.event.pull_request.html_url }}"

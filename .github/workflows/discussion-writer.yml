@@ -81,6 +81,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Preflight discussion writer trigger and files
+        run: node --import tsx src/workflow-guards-cli.ts --workflow discussion-writer --allowed-event workflow_dispatch --allowed-event schedule --allowed-event release --required-path package.json --required-path tsconfig.json --required-path src/discussion-writer-cli.ts --required-path src/discussion-writer.ts --expected-default-branch main
+
       - name: Generate or publish discussion
         run: node --import tsx src/discussion-writer-cli.ts
 

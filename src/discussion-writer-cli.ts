@@ -22,6 +22,7 @@ import {
   readRecentDiscussions,
   resolveDiscussionCategoryBySlugOrName,
 } from './github.js';
+import { WorkflowGuardError, assertWorkflowGuards } from './workflow-guards.js';
 
 const argv = yargs(hideBin(process.argv))
   .option('discussion-type', {
@@ -140,8 +141,25 @@ async function writePreviewArtifacts(markdown: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const inGithubActions = process.env.GITHUB_ACTIONS === 'true' || Boolean(process.env.GITHUB_EVENT_NAME);
+
+  await assertWorkflowGuards({
+    workflowName: 'discussion-writer',
+    requiredPaths: [
+      'package.json',
+      'tsconfig.json',
+      'src/discussion-writer-cli.ts',
+      'src/discussion-writer.ts',
+    ],
+    ...(inGithubActions ? {
+      allowedEvents: ['workflow_dispatch', 'schedule', 'release'],
+      expectedDefaultBranch: config.BASE_BRANCH,
+    } : {}),
+  });
+
   if (!config.DISCUSSIONS_ENABLED) {
-    throw new Error('Discussions are disabled (DISCUSSIONS_ENABLED=false).');
+    console.log('Discussions are disabled (DISCUSSIONS_ENABLED=false); skipping discussion writer run.');
+    return;
   }
 
   const workflowAutoPublish = parseWorkflowInputBoolean(process.env.INPUT_AUTO_PUBLISH);
@@ -179,6 +197,11 @@ async function main(): Promise<void> {
 }
 
 main().catch(error => {
+  if (error instanceof WorkflowGuardError) {
+    console.error(error.message);
+    process.exitCode = error.exitCode;
+    return;
+  }
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
 });

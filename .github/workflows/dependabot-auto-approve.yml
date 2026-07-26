@@ -13,8 +13,57 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
+      - name: Preflight dependabot trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request_target" ]; then
+            echo "dependabot-auto-approve: expected pull_request_target trigger but received $EVENT_NAME."
+            exit 64
+          fi
+          if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "main" ]; then
+            echo "dependabot-auto-approve: expected repository default branch main but received $DEFAULT_BRANCH."
+            exit 64
+          fi
+          if [ -n "$DEFAULT_BRANCH" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "dependabot-auto-approve: expected PR target branch $DEFAULT_BRANCH but received $BASE_REF."
+            exit 64
+          fi
+
       - name: Auto-approve dependabot PR
-        run: gh pr review --approve "$PR_URL" || echo "Already approved or approval not applicable; skipping."
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          is_transient_gh_error() {
+            printf '%s' "$1" | grep -Eiq 'ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|temporary failure|rate limit|502|503|504'
+          }
+
+          retry_gh() {
+            attempts=3
+            delay=2
+            attempt=1
+            while true; do
+              if output="$("$@" 2>&1)"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if is_transient_gh_error "$output" && [ "$attempt" -lt "$attempts" ]; then
+                echo "Transient GitHub CLI error (attempt $attempt/$attempts); retrying in ${delay}s..." >&2
+                sleep "$delay"
+                delay=$((delay * 2))
+                attempt=$((attempt + 1))
+                continue
+              fi
+              printf '%s\n' "$output" >&2
+              return "$status"
+            done
+          }
+
+          retry_gh gh pr review --approve "$PR_URL"
