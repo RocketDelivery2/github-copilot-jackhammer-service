@@ -136,3 +136,28 @@ test('orders queue by standards score and blockers first', () => {
   assert.equal(ranked[0]?.task.title, blockers.title);
   assert.equal(ranked[ranked.length - 1]?.task.title, polish.title);
 });
+
+test('repeated cached rankings stay stable for the same task objects', () => {
+  const task = makeTask({
+    type: 'maintenance',
+    title: 'Fix failing build and tests',
+    summary: 'CI is red due to failing build and failing tests.',
+    copilot_prompt: 'Resolve blockers first and validate with build/test/lint.',
+    test_plan: ['npm test', 'npm run build', 'npm run lint']
+  });
+  const tasks = [task, makeTask({
+    type: 'docs',
+    title: 'UI polish copy updates',
+    summary: 'Improve visual polish and cosmetic wording in frontend UI.',
+    copilot_prompt: 'Polish UI text only.',
+    test_plan: ['Manual smoke check.']
+  })];
+
+  const first = rankCommandsByIndustryStandards(tasks, unstableSnapshot);
+  const second = rankCommandsByIndustryStandards(tasks, unstableSnapshot);
+  const repeatedAssessment = assessTaskByIndustryStandards(task, unstableSnapshot);
+
+  assert.deepEqual(first, second);
+  assert.deepEqual(repeatedAssessment, assessTaskByIndustryStandards(task, unstableSnapshot));
+  assert.equal(first[0]?.assessment.unstableBackendDetected, true);
+});
