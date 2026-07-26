@@ -45,6 +45,21 @@ describe('config', () => {
       ADAPTIVE_PREVIEW_CAPTURE_SOURCE: 'unknown-source',
     }));
   });
+
+  it('supports documented close-issue alias and merge method settings', async () => {
+    const { parseConfig } = await import('../config.js');
+
+    const parsed = parseConfig({
+      OPENAI_API_KEY: 'test-openai-key',
+      GITHUB_TOKEN: 'test-github-token',
+      CLOSE_ISSUE_AFTER_MERGE: 'true',
+      MERGE_METHOD: 'rebase',
+    });
+
+    assert.equal(parsed.CLOSE_ISSUE_AFTER_MERGE, true);
+    assert.equal(parsed.AUTO_CLOSE_ISSUE, true);
+    assert.equal(parsed.MERGE_METHOD, 'rebase');
+  });
 });
 
 function restoreEnv(key: string, value: string | undefined): void {
@@ -55,4 +70,3 @@ function restoreEnv(key: string, value: string | undefined): void {
 
   process.env[key] = value;
 }
-
