@@ -16,22 +16,105 @@ jobs:
 
     steps:
       - name: Checkout
+        id: checkout
         uses: actions/checkout@v4
 
       - name: Set up Node.js
+        id: setup-node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
       - name: Install dependencies
+        id: install
         run: npm ci
 
       - name: Run tests
+        id: test
         run: npm test
 
       - name: Build
+        id: build
         run: npm run build
 
       - name: Lint
+        id: lint
         run: npm run lint
+
+      - name: Write run summary and artifact
+        if: always()
+        env:
+          WORKFLOW_NAME: ${{ github.workflow }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          COMMIT_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report_dir = Path('.workflow-reports')
+          report_dir.mkdir(parents=True, exist_ok=True)
+          report_path = report_dir / 'test-and-build-report.json'
+
+          steps = [
+              {'step': 'Install dependencies', 'command': 'npm ci', 'outcome': os.environ['INSTALL_OUTCOME']},
+              {'step': 'Run tests', 'command': 'npm test', 'outcome': os.environ['TEST_OUTCOME']},
+              {'step': 'Build', 'command': 'npm run build', 'outcome': os.environ['BUILD_OUTCOME']},
+              {'step': 'Lint', 'command': 'npm run lint', 'outcome': os.environ['LINT_OUTCOME']},
+          ]
+          decision = 'pass' if all(item['outcome'] == 'success' for item in steps) else 'fail'
+
+          report = {
+              'workflow': os.environ['WORKFLOW_NAME'],
+              'run_id': int(os.environ['RUN_ID']),
+              'run_number': int(os.environ['RUN_NUMBER']),
+              'run_attempt': int(os.environ['RUN_ATTEMPT']),
+              'commit': os.environ['COMMIT_SHA'],
+              'ref_name': os.environ['REF_NAME'],
+              'decision': decision,
+              'steps': steps,
+          }
+          report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+
+          summary = Path(os.environ['GITHUB_STEP_SUMMARY'])
+          lines = [
+              '## Run report',
+              '',
+              '| Field | Value |',
+              '|------|-------|',
+              f"| Workflow | {report['workflow']} |",
+              f"| Run ID | {report['run_id']} |",
+              f"| Attempt | {report['run_attempt']} |",
+              f"| Commit | `{report['commit']}` |",
+              f"| Branch | `{report['ref_name']}` |",
+              f"| Decision | {decision.upper()} |",
+              '',
+              '| Step | Command | Outcome |',
+              '|------|---------|---------|',
+          ]
+          for item in steps:
+              lines.append(f"| {item['step']} | `{item['command']}` | {item['outcome']} |")
+          lines.extend([
+              '',
+              f'Machine-readable report: `{report_path.as_posix()}`',
+              '',
+          ])
+          summary.open('a', encoding='utf-8').write('\n'.join(lines))
+          PY
+
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-and-build-report
+          path: .workflow-reports/test-and-build-report.json
+          if-no-files-found: error

@@ -35,15 +35,17 @@ jobs:
         run: |
           existing=$(gh pr list --head "${GITHUB_REF_NAME}" --base main --state open --json number --jq length)
           if [ "$existing" = "0" ]; then
+            body=$(printf '%s\n' \
+              'Auto-opened by auto-merge workflow. **This PR is a DRAFT.**' \
+              '' \
+              'To enable auto-merge:' \
+              '1. Complete changes and mark the PR ready for review.' \
+              '2. Add the `auto-merge` label.' \
+              '' \
+              'Auto-merge will NOT fire while this PR is in draft state.')
             gh pr create \
               --title "auto: ${GITHUB_REF_NAME}" \
-              --body "Auto-opened by auto-merge workflow. **This PR is a DRAFT.**
-
-To enable auto-merge:
-1. Complete changes and mark the PR ready for review.
-2. Add the \`auto-merge\` label.
-
-Auto-merge will NOT fire while this PR is in draft state." \
+              --body "$body" \
               --base main \
               --head "${GITHUB_REF_NAME}" \
               --draft
@@ -102,32 +104,91 @@ Auto-merge will NOT fire while this PR is in draft state." \
           fi
 
           echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
+          echo "labels_json=$LABELS_JSON" >> $GITHUB_OUTPUT
           {
             echo "gate_log<<EOF"
             printf "$GATE_LOG"
             echo "EOF"
           } >> $GITHUB_OUTPUT
 
-      - name: Write gate summary to workflow log
+      - name: Write gate summary and artifact
         if: always()
         env:
+          WORKFLOW_NAME: ${{ github.workflow }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          COMMIT_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          ACTOR: ${{ github.actor }}
           GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
           GATE_LOG: ${{ steps.gates.outputs.gate_log }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABELS_JSON: ${{ steps.gates.outputs.labels_json }}
         run: |
-          {
-            echo "## Auto-merge gate evaluation -- PR #${PR_NUMBER}"
-            echo ""
-            if [ "$GATE_PASS" = "true" ]; then
-              echo "Decision: ALLOW -- all gates passed; arming squash auto-merge."
-            else
-              echo "Decision: BLOCK -- one or more gates failed; auto-merge NOT armed."
-            fi
-            echo ""
-            echo "| Gate | Result | Reason |"
-            echo "|------|--------|--------|"
-            printf "$GATE_LOG"
-          } >> $GITHUB_STEP_SUMMARY
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report_dir = Path('.workflow-reports')
+          report_dir.mkdir(parents=True, exist_ok=True)
+          report_path = report_dir / 'auto-merge-gate-report.json'
+
+          labels = json.loads(os.environ['LABELS_JSON'])
+          gate_pass = os.environ['GATE_PASS'] == 'true'
+          decision = 'ALLOW' if gate_pass else 'BLOCK'
+
+          report = {
+              'workflow': os.environ['WORKFLOW_NAME'],
+              'run_id': int(os.environ['RUN_ID']),
+              'run_number': int(os.environ['RUN_NUMBER']),
+              'run_attempt': int(os.environ['RUN_ATTEMPT']),
+              'commit': os.environ['COMMIT_SHA'],
+              'ref_name': os.environ['REF_NAME'],
+              'pr_number': int(os.environ['PR_NUMBER']),
+              'pr_url': os.environ['PR_URL'],
+              'actor': os.environ['ACTOR'],
+              'decision': decision,
+              'gate_pass': gate_pass,
+              'gate_log': os.environ['GATE_LOG'],
+              'labels': labels,
+          }
+          report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+
+          summary = Path(os.environ['GITHUB_STEP_SUMMARY'])
+          lines = [
+              f'## Auto-merge gate evaluation -- PR #{report["pr_number"]}',
+              '',
+              '| Field | Value |',
+              '|------|-------|',
+              f"| Workflow | {report['workflow']} |",
+              f"| Run ID | {report['run_id']} |",
+              f"| Attempt | {report['run_attempt']} |",
+              f"| Commit | `{report['commit']}` |",
+              f"| Branch | `{report['ref_name']}` |",
+              f"| PR | [#{report['pr_number']}]({report['pr_url']}) |",
+              f"| Actor | `{report['actor']}` |",
+              f"| Decision | {decision} |",
+              '',
+              '| Gate | Result | Reason |',
+              '|------|--------|--------|',
+              report['gate_log'].rstrip('\n'),
+              '',
+              f'Machine-readable report: `{report_path.as_posix()}`',
+              '',
+          ]
+          summary.open('a', encoding='utf-8').write('\n'.join(lines))
+          PY
+
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-merge-gate-report
+          path: .workflow-reports/auto-merge-gate-report.json
+          if-no-files-found: error
 
       - name: Arm squash auto-merge
         if: steps.gates.outputs.gate_pass == 'true'
