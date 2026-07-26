@@ -131,6 +131,20 @@ describe('orchestration rebalance', () => {
     assert.equal(rebalanced[0]?.id, 'conversation:agent_question:feature');
     assert.equal(rebalanced[0]?.kind, 'conversation');
   });
+
+  it('deduplicates repeated signals without changing resulting work items', () => {
+    const queue = [item({ id: 'feature', title: 'Continue feature', kind: 'feature' })];
+    const repeated: QueueSignal = {
+      kind: 'agent_question',
+      severity: 'warning',
+      message: 'Copilot asked which approach to use.',
+      workItemId: 'feature',
+    };
+
+    const rebalanced = rebalanceWorkItems(queue, [], [repeated, repeated, repeated]);
+    assert.equal(rebalanced.filter(workItem => workItem.id === 'conversation:agent_question:feature').length, 1);
+    assert.equal(rebalanced[0]?.id, 'conversation:agent_question:feature');
+  });
 });
 
 describe('orchestration parallelism', () => {

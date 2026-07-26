@@ -74,11 +74,16 @@ export async function snapshotRepo(workDir: string, git: SimpleGit): Promise<Rep
   const sha = (await git.revparse(['HEAD'])).trim();
   const recentChanges = await git.raw(['log', '--oneline', '--decorate', '--max-count=20']);
   const all = (await walk(workDir, workDir, ig)).filter(looksText);
-  all.sort((a, b) => scoreFile(a) - scoreFile(b));
+  const rankedFiles = all.map((file, index) => ({
+    file,
+    index,
+    score: scoreFile(file),
+  }));
+  rankedFiles.sort((left, right) => left.score - right.score || left.index - right.index);
 
   const files: RepoFile[] = [];
   let total = 0;
-  for (const rel of all) {
+  for (const { file: rel } of rankedFiles) {
     if (files.length >= config.MAX_CONTEXT_FILES || total >= config.MAX_CONTEXT_BYTES) break;
     const abs = path.join(workDir, rel);
     const st = await fs.stat(abs);

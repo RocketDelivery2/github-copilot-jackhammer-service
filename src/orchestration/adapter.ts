@@ -625,16 +625,19 @@ export async function loadAdaptivePreviewDecisionInputs(
 
 export function mapRuntimeInputsToWorkItems(inputs: AdaptiveQueueRuntimeInputs): WorkItem[] {
   const workItems: WorkItem[] = [];
+  const workItemIds = new Set<string>();
 
   if (inputs.activeWorkItem) {
-    workItems.push(mapActiveWorkItemToWorkItem(inputs.activeWorkItem));
+    const active = mapActiveWorkItemToWorkItem(inputs.activeWorkItem);
+    workItems.push(active);
+    workItemIds.add(active.id);
   }
 
   for (const item of inputs.commandQueue ?? []) {
     const workItem = mapCommandQueueItemToWorkItem(item);
-    if (!workItems.some(existing => existing.id === workItem.id)) {
-      workItems.push(workItem);
-    }
+    if (workItemIds.has(workItem.id)) continue;
+    workItems.push(workItem);
+    workItemIds.add(workItem.id);
   }
 
   return workItems;
@@ -1028,6 +1031,5 @@ function normalizeSkillBasePath(skillPath: string | undefined, skillName: string
 function isEnoent(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
-
 
 

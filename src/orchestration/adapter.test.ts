@@ -112,6 +112,43 @@ describe('adaptive queue adapter', () => {
     ]);
   });
 
+  it('keeps first-seen work item ids while mapping runtime inputs', () => {
+    const duplicateInputs: AdaptiveQueueRuntimeInputs = {
+      activeWorkItem: {
+        issueNumber: 100,
+        issueUrl: 'https://github.example/issues/100',
+        title: 'Active item',
+        startedAt: '2026-06-21T12:00:00.000Z',
+      },
+      commandQueue: [{
+        hash: 'dup100',
+        title: 'Duplicate active item id',
+        priority: 'high',
+        issueNumber: 100,
+        issueUrl: 'https://github.example/issues/100',
+        prompt: 'Duplicate active item should be ignored.',
+      }, {
+        hash: 'dup200-a',
+        title: 'First queue item',
+        priority: 'medium',
+        issueNumber: 200,
+        issueUrl: 'https://github.example/issues/200',
+        prompt: 'First queue item.',
+      }, {
+        hash: 'dup200-b',
+        title: 'Second queue item with same issue id',
+        priority: 'low',
+        issueNumber: 200,
+        issueUrl: 'https://github.example/issues/200',
+        prompt: 'Duplicate queue id should be ignored.',
+      }],
+    };
+
+    const workItems = mapRuntimeInputsToWorkItems(duplicateInputs);
+    assert.deepEqual(workItems.map(workItem => workItem.id), ['issue:100', 'issue:200']);
+    assert.equal(workItems[1]?.title, 'First queue item');
+  });
+
   it('disabled preview yields no capture requests regardless of source', () => {
     const recent = buildAdaptivePreviewCommandCaptureRequests({
       enabled: false,
@@ -1397,5 +1434,4 @@ function buildCommandExecutionResult(
     workItemId: override.workItemId,
   };
 }
-
 

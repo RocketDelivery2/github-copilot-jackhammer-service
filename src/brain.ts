@@ -180,9 +180,7 @@ export function rebalanceQueue(
   const recommendedTitle = guidance?.recommendedNextPR?.toLowerCase() ?? null;
   const blockers = guidance?.blockers.map(b => b.toLowerCase()) ?? [];
 
-  function scoreItem(item: CommandQueueItem): number {
-    const title = item.title.toLowerCase();
-    const prompt = item.prompt.toLowerCase();
+  function scoreItem(title: string, prompt: string, priority: CommandQueueItem['priority']): number {
 
     // Recommended Next PR gets the top spot.
     if (recommendedTitle && (title.includes(recommendedTitle) || recommendedTitle.includes(title))) {
@@ -204,11 +202,22 @@ export function rebalanceQueue(
     if (failedChecks && (title.includes('test') || prompt.includes('test'))) score -= 30;
 
     // Priority field from AI.
-    if (item.priority === 'high') score -= 20;
-    else if (item.priority === 'medium') score -= 10;
+    if (priority === 'high') score -= 20;
+    else if (priority === 'medium') score -= 10;
 
     return score;
   }
 
-  return [...queue].sort((a, b) => scoreItem(a) - scoreItem(b));
+  const ranked = queue.map((item, index) => {
+    const title = item.title.toLowerCase();
+    const prompt = item.prompt.toLowerCase();
+    return {
+      item,
+      index,
+      score: scoreItem(title, prompt, item.priority),
+    };
+  });
+
+  ranked.sort((left, right) => left.score - right.score || left.index - right.index);
+  return ranked.map(entry => entry.item);
 }

@@ -31,9 +31,10 @@ export function rebalanceWorkItems(
     hasActiveFailure: allSignals.some(signal => FAILURE_SIGNAL_KINDS.has(signal.kind)),
   };
   const originalOrder = new Map(items.map((item, index) => [item.id, index]));
+  const scoreByItemId = new Map(items.map(item => [item.id, scoreWorkItem(item, context)]));
 
   return [...items].sort((a, b) => {
-    const scoreDiff = scoreWorkItem(b, context) - scoreWorkItem(a, context);
+    const scoreDiff = (scoreByItemId.get(b.id) ?? 0) - (scoreByItemId.get(a.id) ?? 0);
     if (scoreDiff !== 0) return scoreDiff;
     return (originalOrder.get(a.id) ?? 0) - (originalOrder.get(b.id) ?? 0);
   });
@@ -111,11 +112,13 @@ function promoteOrInsertFailureFix(items: WorkItem[], signals: readonly QueueSig
 }
 
 function insertConversationItems(items: WorkItem[], signals: readonly QueueSignal[]): void {
+  const existingIds = new Set(items.map(item => item.id));
   for (const signal of signals) {
     const conversation = createConversationWorkItem(signal);
     if (!conversation) continue;
-    if (items.some(item => item.id === conversation.id)) continue;
+    if (existingIds.has(conversation.id)) continue;
     items.push(conversation);
+    existingIds.add(conversation.id);
   }
 }
 
@@ -153,14 +156,13 @@ function cloneWorkItem(item: WorkItem): WorkItem {
 
 function mergeSignals(signals: QueueSignal[]): QueueSignal[] {
   const merged: QueueSignal[] = [];
+  const seenKeys = new Set<string>();
 
   for (const signal of signals) {
-    const exists = merged.some(existing =>
-      existing.kind === signal.kind
-      && existing.workItemId === signal.workItemId
-      && existing.targetItemId === signal.targetItemId
-    );
-    if (!exists) merged.push(signal);
+    const key = `${signal.kind}\u0000${signal.workItemId ?? ''}\u0000${signal.targetItemId ?? ''}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    merged.push(signal);
   }
 
   return merged;

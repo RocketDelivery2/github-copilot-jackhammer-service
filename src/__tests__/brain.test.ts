@@ -293,4 +293,21 @@ describe('rebalanceQueue', () => {
     assert.equal(rebalanced[1]!.title, 'Task B');
     assert.equal(rebalanced[2]!.title, 'Task C');
   });
+
+  it('preserves stable input ordering for equal-score items', () => {
+    const queue = [
+      makeItem('Task A', 'low'),
+      makeItem('Task B', 'low'),
+      makeItem('Task C', 'low'),
+    ];
+    const rebalanced = rebalanceQueue(queue, {
+      guidance: null,
+      failedChecks: false,
+      hasTests: false,
+      hasBuildIssue: false,
+      hasLintIssue: false,
+      isProductionReady: false,
+    });
+    assert.deepEqual(rebalanced.map(item => item.title), ['Task A', 'Task B', 'Task C']);
+  });
 });
