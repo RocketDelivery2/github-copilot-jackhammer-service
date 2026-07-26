@@ -519,14 +519,25 @@ export async function buildAdaptivePreviewSkillExecutionPlans(
   }
 
   const loadDocument = options.loadSkillDocument ?? loadSkillDocumentFromFile;
+  const loadDocumentCache = new Map<string, Promise<SkillDocument>>();
   const plans: SkillExecutionPlan[] = [];
   for (const selection of options.skillSelections.slice(0, maxPlans)) {
     const metadata = options.skillIndex.skills.find(skill => skill.name === selection.skillName);
-    if (!metadata?.skillPath) {
+    const skillPath = metadata?.skillPath;
+    if (!skillPath) {
       continue;
     }
 
-    const document = await loadDocument(metadata.skillPath);
+    let documentPromise = loadDocumentCache.get(skillPath);
+    if (!documentPromise) {
+      documentPromise = loadDocument(skillPath).catch((error) => {
+        loadDocumentCache.delete(skillPath);
+        throw error;
+      });
+      loadDocumentCache.set(skillPath, documentPromise);
+    }
+
+    const document = await documentPromise;
     plans.push(buildSkillExecutionPlan({
       taskId: selection.taskId,
       skillName: selection.skillName,
@@ -1028,6 +1039,4 @@ function normalizeSkillBasePath(skillPath: string | undefined, skillName: string
 function isEnoent(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
-
-
 

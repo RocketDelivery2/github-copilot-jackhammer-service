@@ -29,6 +29,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "node scripts/run-tests.mjs",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "benchmark:adaptive-preview-skill-cache": "node --import tsx scripts/benchmarks/adaptive-preview-skill-document-cache.mjs",
     "once": "tsx src/index.ts --once",
     "doctor": "tsx src/index.ts --doctor",
     "repo:metadata": "bash scripts/set-repo-metadata.sh",

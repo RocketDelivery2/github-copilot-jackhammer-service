@@ -599,6 +599,87 @@ keywords: [error, failure, repair]
     assert.equal(loadCalls.length >= 2, true);
   });
 
+  it('reuses a loaded skill document for duplicate selections within one execution plan build', async () => {
+    const skillIndex = createSkillMetadataIndex([{
+      skillPath: 'skills/validation/skill.md',
+      markdown: `---
+name: validation
+description: Validate code changes with test build lint workflow.
+version: 1.0.0
+risk: low
+allowedTools: [npm.cmd]
+resourceHints: [package.json]
+keywords: [validation, test, build, lint]
+---
+`,
+    }]);
+
+    const loadCalls: string[] = [];
+    const mockLoad = async (filePath: string): Promise<SkillDocument> => {
+      loadCalls.push(filePath);
+      return {
+        metadata: {
+          name: 'validation',
+          description: 'mock',
+          version: '1.0.0',
+          risk: 'low',
+          allowedTools: [],
+          resourceHints: [],
+          keywords: [],
+          skillPath: filePath,
+        },
+        body: '1. Step one\n2. Step two',
+      };
+    };
+
+    const plans = await buildAdaptivePreviewSkillExecutionPlans({
+      enabled: true,
+      skillSelections: [
+        {
+          taskId: 'task:one',
+          skillName: 'validation',
+          rank: 1,
+          score: 8,
+          reasons: ['keyword:validation'],
+          risk: 'low',
+          allowedTools: ['npm.cmd'],
+          trustPolicySummary: {
+            instructionsReadAllowed: true,
+            referencesReadAllowed: true,
+            assetsReadAllowed: true,
+            scriptsRequireHumanApproval: true,
+            scriptsAutoExecutable: false,
+          },
+        },
+        {
+          taskId: 'task:two',
+          skillName: 'validation',
+          rank: 2,
+          score: 7,
+          reasons: ['keyword:validation'],
+          risk: 'low',
+          allowedTools: ['npm.cmd'],
+          trustPolicySummary: {
+            instructionsReadAllowed: true,
+            referencesReadAllowed: true,
+            assetsReadAllowed: true,
+            scriptsRequireHumanApproval: true,
+            scriptsAutoExecutable: false,
+          },
+        },
+      ],
+      skillIndex,
+      maxPlans: 2,
+      maxStepsPerPlan: 2,
+      loadSkillDocument: mockLoad,
+    });
+
+    assert.equal(plans.length, 2);
+    assert.equal(loadCalls.length, 1);
+    assert.equal(plans[0]?.skillName, 'validation');
+    assert.equal(plans[1]?.skillName, 'validation');
+  });
+
   it('captures preview skill execution plans as journal records', async () => {
     const skillIndex = createSkillMetadataIndex([{
       skillPath: 'skills/validation/skill.md',
@@ -1397,5 +1478,4 @@ function buildCommandExecutionResult(
     workItemId: override.workItemId,
   };
 }
-
 
