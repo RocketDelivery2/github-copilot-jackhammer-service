@@ -6,16 +6,17 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   create:
 
+permissions: {}
+
 concurrency:
   group: auto-merge-${{ github.event.pull_request.number || github.ref_name }}
   cancel-in-progress: false
 
-permissions:
-  pull-requests: write
-  contents: write
-
 jobs:
   open-pr-on-branch:
+    permissions:
+      contents: read
+      pull-requests: write
     # When a new branch is pushed, open a DRAFT PR targeting main.
     # Draft prevents auto-merge from arming until a human marks it ready.
     if: >-
@@ -50,6 +51,9 @@ Auto-merge will NOT fire while this PR is in draft state." \
           fi
 
   approve-and-merge:
+    permissions:
+      contents: write
+      pull-requests: write
     # Evaluate safety gates before arming auto-merge.
     # Auto-merge is BLOCKED unless ALL gates pass.
     # Every decision (allow or block) is written to the workflow step summary.

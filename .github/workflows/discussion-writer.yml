@@ -36,11 +36,7 @@ on:
   release:
     types: [published]
 
-permissions:
-  contents: read
-  discussions: write
-  issues: read
-  pull-requests: read
+permissions: {}
 
 concurrency:
   group: discussion-writer-${{ github.repository }}
@@ -50,9 +46,12 @@ jobs:
   discussion-writer:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      discussions: write
+      issues: read
+      pull-requests: read
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'unused-for-discussion-writer' }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GITHUB_OWNER: ${{ github.repository_owner }}
       GITHUB_REPO: ${{ github.event.repository.name }}
       DISCUSSIONS_ENABLED: ${{ vars.DISCUSSIONS_ENABLED || 'false' }}
@@ -82,6 +81,9 @@ jobs:
         run: npm ci
 
       - name: Generate or publish discussion
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'unused-for-discussion-writer' }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: node --import tsx src/discussion-writer-cli.ts
 
       - name: Upload discussion preview artifact
