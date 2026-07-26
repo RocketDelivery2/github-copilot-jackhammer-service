@@ -18,25 +18,39 @@ export function rebalanceWorkItems(
   events: readonly ExecutionEvent[] = [],
   signals: readonly QueueSignal[] = [],
 ): WorkItem[] {
-  const allSignals = mergeSignals([...signals, ...classifyExecutionEvents(events)]);
-  const items = workItems.map(cloneWorkItem);
+  const allSignals = mergeSignals([signals, classifyExecutionEvents(events)]);
+  const items: WorkItem[] = new Array(workItems.length);
+  const completedIds = new Set<string>();
+  const itemIds = new Set<string>();
 
-  promoteOrInsertFailureFix(items, allSignals);
-  insertConversationItems(items, allSignals);
+  for (let index = 0; index < workItems.length; index++) {
+    const cloned = cloneWorkItem(workItems[index]!);
+    items[index] = cloned;
+    itemIds.add(cloned.id);
+    if (cloned.status === 'completed') completedIds.add(cloned.id);
+  }
 
-  const completedIds = new Set(items.filter(item => item.status === 'completed').map(item => item.id));
+  promoteOrInsertFailureFix(items, itemIds, allSignals);
+  insertConversationItems(items, itemIds, allSignals);
+
   const context: ScoreContext = {
     signals: allSignals,
     completedIds,
-    hasActiveFailure: allSignals.some(signal => FAILURE_SIGNAL_KINDS.has(signal.kind)),
+    hasActiveFailure: hasActiveFailure(allSignals),
   };
-  const originalOrder = new Map(items.map((item, index) => [item.id, index]));
+  const originalOrder = new Map<string, number>();
 
-  return [...items].sort((a, b) => {
+  for (let index = 0; index < items.length; index++) {
+    originalOrder.set(items[index]!.id, index);
+  }
+
+  items.sort((a, b) => {
     const scoreDiff = scoreWorkItem(b, context) - scoreWorkItem(a, context);
     if (scoreDiff !== 0) return scoreDiff;
     return (originalOrder.get(a.id) ?? 0) - (originalOrder.get(b.id) ?? 0);
   });
+
+  return items;
 }
 
 export function scoreWorkItem(
@@ -79,7 +93,11 @@ export function scoreWorkItem(
   return score;
 }
 
-function promoteOrInsertFailureFix(items: WorkItem[], signals: readonly QueueSignal[]): void {
+function promoteOrInsertFailureFix(
+  items: WorkItem[],
+  itemIds: Set<string>,
+  signals: readonly QueueSignal[],
+): void {
   const failure = signals.find(signal => FAILURE_SIGNAL_KINDS.has(signal.kind));
   if (!failure) return;
 
@@ -108,14 +126,20 @@ function promoteOrInsertFailureFix(items: WorkItem[], signals: readonly QueueSig
     description: failure.message,
     writePaths: [],
   });
+  itemIds.add(fixId);
 }
 
-function insertConversationItems(items: WorkItem[], signals: readonly QueueSignal[]): void {
+function insertConversationItems(
+  items: WorkItem[],
+  itemIds: Set<string>,
+  signals: readonly QueueSignal[],
+): void {
   for (const signal of signals) {
     const conversation = createConversationWorkItem(signal);
     if (!conversation) continue;
-    if (items.some(item => item.id === conversation.id)) continue;
+    if (itemIds.has(conversation.id)) continue;
     items.push(conversation);
+    itemIds.add(conversation.id);
   }
 }
 
@@ -143,25 +167,32 @@ function dependenciesComplete(item: WorkItem, completedIds: ReadonlySet<string>)
 }
 
 function cloneWorkItem(item: WorkItem): WorkItem {
-  return {
-    ...item,
-    dependsOn: item.dependsOn ? [...item.dependsOn] : undefined,
-    readPaths: item.readPaths ? [...item.readPaths] : undefined,
-    writePaths: item.writePaths ? [...item.writePaths] : undefined,
-  };
+  return { ...item };
 }
 
-function mergeSignals(signals: QueueSignal[]): QueueSignal[] {
+function mergeSignals(signalGroups: readonly (readonly QueueSignal[])[]): QueueSignal[] {
   const merged: QueueSignal[] = [];
+  const seen = new Set<string>();
 
-  for (const signal of signals) {
-    const exists = merged.some(existing =>
-      existing.kind === signal.kind
-      && existing.workItemId === signal.workItemId
-      && existing.targetItemId === signal.targetItemId
-    );
-    if (!exists) merged.push(signal);
+  for (const signals of signalGroups) {
+    for (const signal of signals) {
+      const key = signalKey(signal);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(signal);
+    }
   }
 
   return merged;
+}
+
+function signalKey(signal: QueueSignal): string {
+  return `${signal.kind}\u0000${signal.workItemId ?? ''}\u0000${signal.targetItemId ?? ''}`;
+}
+
+function hasActiveFailure(signals: readonly QueueSignal[]): boolean {
+  for (const signal of signals) {
+    if (FAILURE_SIGNAL_KINDS.has(signal.kind)) return true;
+  }
+  return false;
 }
