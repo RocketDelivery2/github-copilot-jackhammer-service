@@ -101,6 +101,33 @@ describe('deterministic skill selection', () => {
     assert.equal(matches[0].skill.name, 'repo-inspection');
     assert.equal(matches[0].score, 0);
   });
+
+  it('returns the top matches up to the configured limit in a stable order', async () => {
+    const index = createSkillMetadataIndex([
+      {
+        skillPath: 'skills/alpha/skill.md',
+        markdown: `---\nname: alpha\ndescription: Alpha helper\nversion: 1.0.0\nrisk: low\nallowedTools: [npm.cmd]\nresourceHints: [src/]\nkeywords: [alpha]\n---\n`,
+      },
+      {
+        skillPath: 'skills/beta/skill.md',
+        markdown: `---\nname: beta\ndescription: Beta helper\nversion: 1.0.0\nrisk: low\nallowedTools: [npm.cmd]\nresourceHints: [src/]\nkeywords: [beta]\n---\n`,
+      },
+      {
+        skillPath: 'skills/gamma/skill.md',
+        markdown: `---\nname: gamma\ndescription: Gamma helper\nversion: 1.0.0\nrisk: low\nallowedTools: [npm.cmd]\nresourceHints: [src/]\nkeywords: [gamma]\n---\n`,
+      },
+    ]);
+
+    const matches = selectSkillsForTask(index, {
+      title: 'alpha beta gamma',
+      summary: 'alpha beta gamma',
+    }, {
+      limit: 2,
+    });
+
+    assert.equal(matches.length, 2);
+    assert.deepEqual(matches.map(match => match.skill.name), ['alpha', 'beta']);
+  });
 });
 
 describe('trust policy', () => {
