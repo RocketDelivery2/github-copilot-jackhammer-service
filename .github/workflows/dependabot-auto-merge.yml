@@ -41,26 +41,73 @@ jobs:
             echo "EOF"
           } >> $GITHUB_OUTPUT
 
-      - name: Write decision summary
+      - name: Write run manifest and summary
         if: always()
         env:
+          WORKFLOW_NAME: ${{ github.workflow }}
+          RUN_MANIFEST_PATH: .ai/run-manifest.json
           GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
           GATE_LOG: ${{ steps.gates.outputs.gate_log }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
+          mkdir -p .ai
+
+          if [ "$GATE_PASS" = "true" ]; then
+            DECISION="allow"
+            DECISION_LABEL="ALLOW"
+            DECISION_REASON="deny-label gate passed; auto-merge may be armed."
+          else
+            DECISION="block"
+            DECISION_LABEL="BLOCK"
+            DECISION_REASON="deny-label gate failed; auto-merge NOT armed."
+          fi
+
+          jq -n \
+            --arg workflow "$WORKFLOW_NAME" \
+            --arg run_id "$RUN_ID" \
+            --arg run_attempt "$RUN_ATTEMPT" \
+            --arg commit "$COMMIT_SHA" \
+            --arg decision "$DECISION" \
+            --arg decision_reason "$DECISION_REASON" \
+            --arg pr_number "$PR_NUMBER" \
+            --arg gate_log "$GATE_LOG" \
+            '{
+              workflow: $workflow,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              commit: $commit,
+              decision: $decision,
+              decision_reason: $decision_reason,
+              pr_number: $pr_number,
+              gate_log: $gate_log
+            }' > "$RUN_MANIFEST_PATH"
+
           {
-            echo "## Dependabot auto-merge policy evaluation -- PR #${PR_NUMBER}"
+            echo "## Dependabot auto-merge run"
             echo ""
-            if [ "$GATE_PASS" = "true" ]; then
-              echo "Decision: ALLOW -- deny-label gate passed; auto-merge may be armed."
-            else
-              echo "Decision: BLOCK -- deny-label gate failed; auto-merge NOT armed."
-            fi
-            echo ""
-            echo "| Gate | Result | Reason |"
-            echo "|------|--------|--------|"
-            printf "$GATE_LOG"
+            echo "| Field | Value |"
+            echo "|------|-------|"
+            echo "| Workflow | ${WORKFLOW_NAME} |"
+            echo "| Run ID | ${RUN_ID} |"
+            echo "| Attempt | ${RUN_ATTEMPT} |"
+            echo "| Commit | ${COMMIT_SHA} |"
+            echo "| Decision | ${DECISION_LABEL} |"
+            echo "| Reason | ${DECISION_REASON} |"
+            echo "| PR | #${PR_NUMBER} |"
+            echo "| Manifest | ${RUN_MANIFEST_PATH} |"
           } >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload run manifest artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-manifest
+          path: .ai/run-manifest.json
+          if-no-files-found: warn
 
       - name: Enable auto-merge for dependabot PR
         if: steps.gates.outputs.gate_pass == 'true'
