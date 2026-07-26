@@ -39,11 +39,14 @@ jobs:
               --title "auto: ${GITHUB_REF_NAME}" \
               --body "Auto-opened by auto-merge workflow. **This PR is a DRAFT.**
 
-To enable auto-merge:
-1. Complete changes and mark the PR ready for review.
-2. Add the \`auto-merge\` label.
+Auto-merge is only available for approved bot-authored PRs.
 
-Auto-merge will NOT fire while this PR is in draft state." \
+To enable auto-merge:
+1. Ensure the PR is authored by an approved bot.
+2. Complete changes and mark the PR ready for review.
+3. Add the \`auto-merge\` label.
+
+Auto-merge will NOT fire while this PR is in draft state or while required checks/reviews are still pending." \
               --base main \
               --head "${GITHUB_REF_NAME}" \
               --draft
@@ -56,57 +59,29 @@ Auto-merge will NOT fire while this PR is in draft state." \
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
       - name: Evaluate safety gates
         id: gates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-          IS_DRAFT: ${{ github.event.pull_request.draft }}
-          ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          GATE_PASS=true
-          GATE_LOG=""
+          PR_CONTEXT_JSON=$(gh pr view "$PR_URL" --json author,isDraft,labels,reviewDecision,mergeStateStatus,number,url)
+          EVALUATION_JSON=$(AUTO_MERGE_PR_CONTEXT_JSON="$PR_CONTEXT_JSON" AUTO_MERGE_REQUIRE_POLICY_LABEL=true AUTO_MERGE_POLICY_LABEL=auto-merge node --import tsx src/auto-merge-policy-cli.ts)
+          GATE_PASS=$(echo "$EVALUATION_JSON" | jq -r '.allowed')
+          GATE_LOG=$(echo "$EVALUATION_JSON" | jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"')
 
-          # Gate 1: PR must not be draft
-          if [ "$IS_DRAFT" = "true" ]; then
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 1: draft check | BLOCKED | PR is still in draft state |\n"
-          else
-            GATE_LOG="${GATE_LOG}| Gate 1: draft check | PASS | PR is not draft |\n"
-          fi
-
-          # Gate 2: explicit allow - label or allowed bot actor
-          LABELS_JSON=$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name]')
-          HAS_LABEL=$(echo "$LABELS_JSON" | jq 'contains(["auto-merge"])')
-
-          ACTOR_ALLOWED=false
-          for allowed in "dependabot[bot]"; do
-            if [ "$ACTOR" = "$allowed" ]; then ACTOR_ALLOWED=true; break; fi
-          done
-
-          if [ "$HAS_LABEL" = "true" ] || [ "$ACTOR_ALLOWED" = "true" ]; then
-            GATE_LOG="${GATE_LOG}| Gate 2: explicit allow | PASS | auto-merge label present or actor is allowed bot |\n"
-          else
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 2: explicit allow | BLOCKED | no auto-merge label; actor not in allowlist |\n"
-          fi
-
-          # Gate 3: policy-sensitive labels block unconditionally
-          SENSITIVE=$(echo "$LABELS_JSON" | jq '[.[] | select(. == "security" or . == "breaking-change" or . == "do-not-merge")] | length')
-          if [ "$SENSITIVE" -gt "0" ]; then
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 3: policy labels | BLOCKED | security/breaking-change/do-not-merge label present |\n"
-          else
-            GATE_LOG="${GATE_LOG}| Gate 3: policy labels | PASS | no policy-sensitive labels |\n"
-          fi
-
-          echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
+          echo "gate_pass=$GATE_PASS" >> "$GITHUB_OUTPUT"
           {
             echo "gate_log<<EOF"
             printf "$GATE_LOG"
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
       - name: Write gate summary to workflow log
         if: always()
