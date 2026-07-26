@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: test-and-build-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

@@ -44,7 +44,7 @@ permissions:
 
 concurrency:
   group: discussion-writer-${{ github.repository }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   discussion-writer:

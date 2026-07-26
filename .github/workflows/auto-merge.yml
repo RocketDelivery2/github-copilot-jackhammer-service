@@ -8,7 +8,7 @@ on:
 
 concurrency:
   group: auto-merge-${{ github.event.pull_request.number || github.ref_name }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   pull-requests: write
@@ -35,15 +35,19 @@ jobs:
         run: |
           existing=$(gh pr list --head "${GITHUB_REF_NAME}" --base main --state open --json number --jq length)
           if [ "$existing" = "0" ]; then
+            body=$(cat <<'EOF'
+            Auto-opened by auto-merge workflow. **This PR is a DRAFT.**
+
+            To enable auto-merge:
+            1. Complete changes and mark the PR ready for review.
+            2. Add the `auto-merge` label.
+
+            Auto-merge will NOT fire while this PR is in draft state.
+            EOF
+            )
             gh pr create \
               --title "auto: ${GITHUB_REF_NAME}" \
-              --body "Auto-opened by auto-merge workflow. **This PR is a DRAFT.**
-
-To enable auto-merge:
-1. Complete changes and mark the PR ready for review.
-2. Add the \`auto-merge\` label.
-
-Auto-merge will NOT fire while this PR is in draft state." \
+              --body "$body" \
               --base main \
               --head "${GITHUB_REF_NAME}" \
               --draft
