@@ -13,6 +13,7 @@ const reviewerPromptPaths = [
   ".github/codex/prompts/regression-test-planner.md",
   ".github/codex/prompts/release-manager.md",
   ".github/codex/prompts/azure-readiness-reviewer.md",
+  ".github/codex/prompts/best-practices-reviewer.md",
   ".github/codex/prompts/merge-governor.md",
 ] as const;
 
