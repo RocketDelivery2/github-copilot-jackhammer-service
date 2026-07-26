@@ -11,11 +11,15 @@ the `auto-merge` label.
 | # | Gate | Condition | Block behavior |
 |---|------|-----------|----------------|
 | 1 | Draft check | PR must not be in draft state | Blocked until marked ready for review |
-| 2 | Explicit allow | PR must have `auto-merge` label OR author is `dependabot[bot]` | Blocked; add label to opt in |
+| 2 | Explicit allow | PR must have `auto-merge` label OR PR author is `dependabot[bot]` | Blocked; add label to opt in |
 | 3 | Policy labels | PR must NOT have `security`, `breaking-change`, or `do-not-merge` label | Blocked unconditionally; requires human merge |
 
 If any gate fails, auto-merge is NOT armed. The reason is written to the
 workflow step summary for every evaluation (pass or block).
+
+Gate summaries now include context values used by the decision (`PR author`,
+`event actor`, and current labels) to make policy drift and trigger-context
+issues visible in run logs.
 
 ## How to Use
 
@@ -84,12 +88,12 @@ git log --oneline -5 origin/main
 | PR with `auto-merge` label, not draft | Arms merge | All gates evaluated; arms if all pass |
 | Draft PR with `auto-merge` label | Arms merge | Gate 1 blocks; merge NOT armed |
 | PR with `security` label | Arms merge | Gate 3 blocks; merge NOT armed |
-| Dependabot PR | Arms merge via separate workflow | Handled by `dependabot-auto-approve.yml` + `dependabot-auto-merge.yml` |
+| Dependabot PR | Arms merge via separate workflow | Handled by `dependabot-auto-approve.yml` + `dependabot-auto-merge.yml`, both deny-label gated |
 | Gate decision visibility | None | Written to step summary on every evaluation |
 
 ## Allowed Bot Actors
 
-The following bot actors are treated as having an implicit explicit-allow (Gate 2 pass):
+The following PR authors are treated as having an implicit explicit-allow (Gate 2 pass):
 
 - `dependabot[bot]`
 

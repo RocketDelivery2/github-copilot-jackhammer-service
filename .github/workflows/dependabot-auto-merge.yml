@@ -2,11 +2,16 @@ name: dependabot-auto-merge
 
 on:
   pull_request_target:
+    branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: write
   pull-requests: write
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   auto-merge:
@@ -35,6 +40,12 @@ jobs:
           fi
 
           echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
+          LABELS_CSV=$(echo "$LABELS_JSON" | jq -r 'if length == 0 then "(none)" else join(", ") end')
+          {
+            echo "labels_csv<<EOF"
+            printf "%s\n" "$LABELS_CSV"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
           {
             echo "gate_log<<EOF"
             printf "$GATE_LOG"
@@ -46,7 +57,9 @@ jobs:
         env:
           GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
           GATE_LOG: ${{ steps.gates.outputs.gate_log }}
+          LABELS_CSV: ${{ steps.gates.outputs.labels_csv }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTOR: ${{ github.actor }}
         run: |
           {
             echo "## Dependabot auto-merge policy evaluation -- PR #${PR_NUMBER}"
@@ -56,6 +69,11 @@ jobs:
             else
               echo "Decision: BLOCK -- deny-label gate failed; auto-merge NOT armed."
             fi
+            echo ""
+            echo "| Context | Value |"
+            echo "|---------|-------|"
+            echo "| Event actor | ${EVENT_ACTOR} |"
+            echo "| labels | ${LABELS_CSV} |"
             echo ""
             echo "| Gate | Result | Reason |"
             echo "|------|--------|--------|"
@@ -67,4 +85,15 @@ jobs:
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --squash "$PR_URL" || echo "Auto-merge already enabled or not applicable; skipping."
+        run: |
+          MERGED_AT=$(gh pr view "$PR_URL" --json mergedAt --jq '.mergedAt')
+          AUTO_MERGE_ENABLED=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$MERGED_AT" != "null" ]; then
+            echo "PR is already merged; auto-merge arming skipped."
+            exit 0
+          fi
+          if [ "$AUTO_MERGE_ENABLED" = "true" ]; then
+            echo "Auto-merge already enabled; nothing to change."
+            exit 0
+          fi
+          gh pr merge --auto --squash "$PR_URL"
