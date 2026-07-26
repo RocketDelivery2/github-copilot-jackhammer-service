@@ -179,19 +179,18 @@ export function rebalanceQueue(
   const { guidance, failedChecks, hasBuildIssue, hasLintIssue } = signals;
   const recommendedTitle = guidance?.recommendedNextPR?.toLowerCase() ?? null;
   const blockers = guidance?.blockers.map(b => b.toLowerCase()) ?? [];
-
-  function scoreItem(item: CommandQueueItem): number {
+  const scoredItems = queue.map((item, originalIndex) => {
     const title = item.title.toLowerCase();
     const prompt = item.prompt.toLowerCase();
 
     // Recommended Next PR gets the top spot.
     if (recommendedTitle && (title.includes(recommendedTitle) || recommendedTitle.includes(title))) {
-      return -1000;
+      return { item, score: -1000, originalIndex };
     }
 
     // Items blocked by known blockers are deprioritised.
-    if (blockers.some(b => title.includes(b) || prompt.includes(b))) {
-      return 1000;
+    if (blockers.some(blocker => title.includes(blocker) || prompt.includes(blocker))) {
+      return { item, score: 1000, originalIndex };
     }
 
     let score = 0;
@@ -207,8 +206,10 @@ export function rebalanceQueue(
     if (item.priority === 'high') score -= 20;
     else if (item.priority === 'medium') score -= 10;
 
-    return score;
-  }
+    return { item, score, originalIndex };
+  });
 
-  return [...queue].sort((a, b) => scoreItem(a) - scoreItem(b));
+  return scoredItems
+    .sort((left, right) => left.score - right.score || left.originalIndex - right.originalIndex)
+    .map(entry => entry.item);
 }

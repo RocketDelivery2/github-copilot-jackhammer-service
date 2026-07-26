@@ -29,6 +29,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "node scripts/run-tests.mjs",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "bench:brain": "node --import tsx scripts/bench-brain.mjs",
     "once": "tsx src/index.ts --once",
     "doctor": "tsx src/index.ts --doctor",
     "repo:metadata": "bash scripts/set-repo-metadata.sh",

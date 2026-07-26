@@ -293,4 +293,39 @@ describe('rebalanceQueue', () => {
     assert.equal(rebalanced[1]!.title, 'Task B');
     assert.equal(rebalanced[2]!.title, 'Task C');
   });
+
+  it('keeps guidance matching case-insensitive and stable for ties', () => {
+    const queue = [
+      makeItem('Alpha task', 'medium'),
+      makeItem('Document API', 'medium'),
+      makeItem('Beta task', 'medium'),
+      makeItem('Fix build error', 'medium'),
+    ];
+    const guidance: CopilotGuidance = {
+      recommendedNextPR: 'DOCUMENT API',
+      planSteps: [],
+      notes: [],
+      validation: [],
+      blockers: ['FIX BUILD ERROR'],
+      errors: [],
+      hasCopilotQuestion: false,
+      rawText: '',
+      extractedAt: new Date().toISOString(),
+    };
+    const rebalanced = rebalanceQueue(queue, {
+      guidance,
+      failedChecks: false,
+      hasTests: false,
+      hasBuildIssue: false,
+      hasLintIssue: false,
+      isProductionReady: false,
+    });
+
+    assert.deepEqual(rebalanced.map(item => item.title), [
+      'Document API',
+      'Alpha task',
+      'Beta task',
+      'Fix build error',
+    ]);
+  });
 });
