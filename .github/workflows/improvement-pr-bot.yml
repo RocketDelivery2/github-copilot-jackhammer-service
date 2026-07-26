@@ -52,57 +52,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          BACKLOG_FILE=".github/improvement-backlog.yml"
-          if [ ! -f "$BACKLOG_FILE" ]; then
-            echo "No backlog file found at $BACKLOG_FILE; exiting."
-            echo "task_id=" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # Parse enabled+safe entries sorted by priority using Python (always available on ubuntu-latest)
-          SELECTED=$(python3 - <<'PYEOF'
-          import sys, re
-
-          with open(".github/improvement-backlog.yml") as f:
-              content = f.read()
-
-          # Simple YAML block parser for our known schema
-          # Split on '  - id:' to get individual entries
-          entries = re.split(r'\n  - id:', content)
-          parsed = []
-          for i, block in enumerate(entries[1:], 1):
-              block = "  - id:" + block
-              def get_field(name, default=""):
-                  m = re.search(r'^\s+' + re.escape(name) + r':\s*(.+)$', block, re.MULTILINE)
-                  return m.group(1).strip().strip("'\"") if m else default
-
-              entry = {
-                  "id": get_field("id"),
-                  "priority": int(get_field("priority", "999")),
-                  "title": get_field("title"),
-                  "label": get_field("label", "improvement"),
-                  "branch_prefix": get_field("branch_prefix"),
-                  "safe": get_field("safe") == "true",
-                  "enabled": get_field("enabled") == "true",
-              }
-              if entry["enabled"]:
-                  parsed.append(entry)
-
-          parsed.sort(key=lambda x: x["priority"])
-          if parsed:
-              e = parsed[0]
-              print(f"id={e['id']}")
-              print(f"title={e['title']}")
-              print(f"label={e['label']}")
-              print(f"branch_prefix={e['branch_prefix']}")
-              print(f"safe={str(e['safe']).lower()}")
-              print(f"priority={e['priority']}")
-          PYEOF
-          )
+          # Use the extracted script for readability and testability
+          SELECTED=$(python3 .github/scripts/select-backlog-task.py 2>/dev/null || echo "")
 
           if [ -z "$SELECTED" ]; then
             echo "No actionable backlog items found."
-            echo "task_id=" >> $GITHUB_OUTPUT
+            echo "id=" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -237,7 +192,11 @@ jobs:
             git diff --cached --stat
             git commit -m "automation: ${TASK_TITLE}"
           else
-            # No file changes; create a marker file so the branch/PR can be opened
+            # No file changes; create a marker file so the branch/PR can be opened.
+            # Marker files accumulate in .github/automation-runs/ on the branch and
+            # are deleted when the branch is removed after merge (--delete-branch).
+            # The main branch never accumulates markers because instruction-only PRs
+            # require a human to implement changes before the branch is merged.
             MARKER=".github/automation-runs/$(echo "$TASK_ID" | tr '/' '-')-${{ github.run_number }}.txt"
             mkdir -p "$(dirname "$MARKER")"
             echo "Automation run: task=$TASK_ID run=${{ github.run_number }} date=$(date -u +%Y-%m-%d)" > "$MARKER"

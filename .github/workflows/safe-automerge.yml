@@ -79,7 +79,8 @@ jobs:
           fi
 
           # Gate 3: Author must be a known automation actor
-          AUTOMATION_ACTORS="github-actions[bot] dependabot[bot] improvement-pr-bot"
+          # Note: workflows authored by improvement-pr-bot run as 'github-actions[bot]'
+          AUTOMATION_ACTORS="github-actions[bot] dependabot[bot]"
           ACTOR_ALLOWED=false
           for allowed in $AUTOMATION_ACTORS; do
             if [ "$PR_AUTHOR" = "$allowed" ]; then

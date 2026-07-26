@@ -81,14 +81,16 @@ jobs:
           set +e
           BIGO_RISKS=""
 
-          # Nested loops over arrays (O(n²) risk)
+          # Candidate nested loops (heuristic: two iteration patterns within 3 lines of each other).
+          # This detects potential O(n²) candidates but may include sequential loops.
+          # Results are flagged for human review, not treated as definitive bugs.
           NESTED_LOOPS=$(grep -rn --include="*.ts" -A3 -E '(for|forEach|map|filter|reduce)\s*\(' src/ 2>/dev/null | \
             grep -B3 -E '(for|forEach|map|filter|reduce)\s*\(' | \
             grep -v "^--$" | grep "\.ts:" | awk -F: '{print $1":"$2}' | sort -u | head -20 || echo "")
 
           if [ -n "$NESTED_LOOPS" ]; then
             while IFS= read -r loc; do
-              BIGO_RISKS="${BIGO_RISKS}\n- Possible nested iteration at \`$loc\`"
+              BIGO_RISKS="${BIGO_RISKS}\n- Iteration patterns within 3 lines (review for nesting) at \`$loc\`"
             done <<< "$NESTED_LOOPS"
           fi
 

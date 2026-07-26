@@ -61,7 +61,7 @@ jobs:
           while IFS= read -r file; do
             # Find function starts and measure distance to next function/end
             LONG=$(awk '
-              /function |=> \{|async \(/ { start=NR }
+              /function[[:space:](]|=> \{|async \(/ { start=NR }
               start && NR - start > 60 && /^\}/ { print FILENAME ":" start "-" NR " (" NR-start " lines)"; start=0 }
             ' "$file" 2>/dev/null | head -5)
             if [ -n "$LONG" ]; then
@@ -78,7 +78,8 @@ jobs:
           MAGIC_COUNT=$(grep -rn --include="*.ts" \
             -E '[^a-zA-Z_][0-9]{2,}[^a-zA-Z_0-9]' src/ 2>/dev/null | \
             grep -v "\.test\." | grep -v "//.*[0-9]" | \
-            grep -vE '(port|timeout|interval|max|min|limit|size|count|version|retry|delay)' | \
+            grep -vE '(port|timeout|interval|max|min|limit|size|count|version|retry|delay|status|code|http)' | \
+            grep -vE '[0-9]+\.[0-9]+\.[0-9]+' | \
             wc -l || echo "0")
           if [ "$MAGIC_COUNT" -gt "10" ]; then
             SMELLS="${SMELLS}\n- **Magic numbers:** $MAGIC_COUNT occurrences — consider named constants"
