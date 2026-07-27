@@ -2,7 +2,7 @@ name: dependabot-auto-merge
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: write
@@ -14,8 +14,57 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
+      - name: Evaluate policy gates
+        id: gates
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          GATE_PASS=true
+          GATE_LOG=""
+
+          LABELS_JSON=$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name]')
+          DENY_COUNT=$(echo "$LABELS_JSON" | jq '[.[] | select(. == "security" or . == "breaking-change" or . == "do-not-merge")] | length')
+
+          if [ "$DENY_COUNT" -gt "0" ]; then
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Deny-label policy | BLOCKED | security/breaking-change/do-not-merge label present |\n"
+          else
+            GATE_LOG="${GATE_LOG}| Deny-label policy | PASS | no deny labels present |\n"
+          fi
+
+          echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
+          {
+            echo "gate_log<<EOF"
+            printf "$GATE_LOG"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Write decision summary
+        if: always()
+        env:
+          GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
+          GATE_LOG: ${{ steps.gates.outputs.gate_log }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "## Dependabot auto-merge policy evaluation -- PR #${PR_NUMBER}"
+            echo ""
+            if [ "$GATE_PASS" = "true" ]; then
+              echo "Decision: ALLOW -- deny-label gate passed; auto-merge may be armed."
+            else
+              echo "Decision: BLOCK -- deny-label gate failed; auto-merge NOT armed."
+            fi
+            echo ""
+            echo "| Gate | Result | Reason |"
+            echo "|------|--------|--------|"
+            printf "$GATE_LOG"
+          } >> $GITHUB_STEP_SUMMARY
+
       - name: Enable auto-merge for dependabot PR
-        run: gh pr merge --auto --squash "$PR_URL" || echo "Auto-merge already enabled or not applicable; skipping."
+        if: steps.gates.outputs.gate_pass == 'true'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "$PR_URL" || echo "Auto-merge already enabled or not applicable; skipping."
