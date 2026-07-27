@@ -20,7 +20,7 @@ function makeTask(overrides: Partial<AiTask>): AiTask {
 
 const unstableSnapshot: RepoSnapshot = {
   owner: 'RocketDelivery2',
-  repo: 'TeamBuilder',
+  repo: 'github-copilot-jackhammer-service',
   baseBranch: 'main',
   commitSha: 'abc123',
   generatedAt: new Date().toISOString(),
