@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { config } from './config.js';
 import { ensureNotesSection, stripWrapperText } from './brain.js';
 import type { AiTask, CopilotGuidance, CopilotResult, RepoSnapshot, ActiveWorkItem } from './types.js';
+import { resolveModel } from './modelRouter.js';
 
 const FEEDBACK_LOOP_PROMPT_POLICY = `
 Feedback-loop policy:
@@ -93,7 +94,7 @@ Repo context:\n${compactContext}
   }
 
   const response = await client.responses.create({
-    model: config.OPENAI_MODEL,
+    model: resolveModel({ call: 'task_creation' }, config),
     instructions: 'You are a senior staff-level engineer producing concise, actionable JackHammer queue GitHub issues for GitHub Copilot coding agent. Select the highest-value next command, enforce industry-standard engineering quality, and keep tasks small, validated, and reviewable. Enforce feedback-loop policy: active work first, answer Copilot questions first, fix failed checks first, then continue with reprioritized queue. Never bypass checks, add secrets, or propose broad unvalidated rewrites. Always return parseable JSON only.',
     input: [{ role: 'user', content }],
     text: {
@@ -168,7 +169,7 @@ Return only the comment text, no JSON wrapper.
 `;
 
   const response = await client.responses.create({
-    model: config.OPENAI_MODEL,
+    model: resolveModel({ call: 'continuation_comment' }, config),
     instructions: 'You are writing a concise GitHub comment to continue a Copilot coding task. Be direct and actionable.',
     input: [{ role: 'user', content: [{ type: 'input_text', text: inputText }] }],
   });
