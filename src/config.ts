@@ -16,6 +16,8 @@ const ConfigSchema = z.object({
   BASE_BRANCH: z.string().default('main'),
   WORK_BRANCH: z.string().default('ai/jackhammer-queue'),
   OPENAI_MODEL: z.string().default('gpt-5.5'),
+  OPENAI_CHEAP_MODEL: z.string().default('gpt-4.1-mini'),
+  MODEL_ROUTING_ENABLED: boolish.default(''),
   POLL_SECONDS: z.coerce.number().int().positive().default(900),
   MAX_TASKS_PER_RUN: z.coerce.number().int().positive().max(20).default(3),
   MAX_CONTEXT_FILES: z.coerce.number().int().positive().default(80),
