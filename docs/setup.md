@@ -67,9 +67,9 @@
 
 ---
 
-## 3. TeamBuilder (serviced repo) — GitHub settings
+## 3. github-copilot-jackhammer-service (serviced repo) — GitHub settings
 
-Target repo: `RocketDelivery2/TeamBuilder`
+Target repo: `RocketDelivery2/github-copilot-jackhammer-service`
 
 ### Settings → General → Features
 
@@ -129,7 +129,7 @@ Target repo: `RocketDelivery2/TeamBuilder`
 
 ## 4. GitHub token permissions
 
-Create a fine-grained PAT scoped to `RocketDelivery2/TeamBuilder`:
+Create a fine-grained PAT scoped to `RocketDelivery2/github-copilot-jackhammer-service`:
 
 | Permission | Level |
 |---|---|
@@ -146,12 +146,12 @@ Create a fine-grained PAT scoped to `RocketDelivery2/TeamBuilder`:
 
 ## 5. Finding the Copilot assignee login
 
-1. Open `RocketDelivery2/TeamBuilder` → Issues → create a temporary test issue.
+1. Open `RocketDelivery2/github-copilot-jackhammer-service` → Issues → create a temporary test issue.
 2. Manually assign **Copilot** to that issue in the GitHub UI.
 3. Run:
 
 ```bash
-gh issue view <issue-number> --repo RocketDelivery2/TeamBuilder --json assignees
+gh issue view <issue-number> --repo RocketDelivery2/github-copilot-jackhammer-service --json assignees
 ```
 
 4. Copy the `login` value into your `.env`:
@@ -186,9 +186,14 @@ All three must pass before enabling full autopilot.
 | `JackHammer.OpenAI.ApiKey` | **Sensitive** |
 | `JackHammer.OpenAI.Model` | `gpt-5.2` |
 | `JackHammer.GitHub.Token` | **Sensitive** |
+| `JackHammer.OpenAI.Model` | `gpt-5.6-terra` |
+| `JackHammer.OpenAI.ModelQueue` | `gpt-5.6-terra` |
+| `JackHammer.OpenAI.ModelContinuation` | `gpt-5.6-luna` |
+| `JackHammer.OpenAI.PromptCacheEnabled` | `true` |
+| `JackHammer.OpenAI.PromptCacheRetention` | `24h` |
 | `JackHammer.GitHub.Owner` | `RocketDelivery2` |
-| `JackHammer.GitHub.Repo` | `TeamBuilder` |
-| `JackHammer.GitHub.RepoUrl` | `https://github.com/RocketDelivery2/TeamBuilder.git` |
+| `JackHammer.GitHub.Repo` | `github-copilot-jackhammer-service` |
+| `JackHammer.GitHub.RepoUrl` | `https://github.com/RocketDelivery2/github-copilot-jackhammer-service.git` |
 | `JackHammer.GitHub.BaseBranch` | `main` |
 | `JackHammer.Copilot.Assignee` | `<exact-copilot-agent-login>` |
 | `JackHammer.FullAutopilot` | `true` |

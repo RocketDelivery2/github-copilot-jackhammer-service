@@ -3,6 +3,7 @@ import OpenAI, { toFile } from 'openai';
 import { z } from 'zod';
 import { config } from './config.js';
 import { ensureNotesSection, stripWrapperText } from './brain.js';
+import { buildPromptCacheOptions, resolveOpenAIModel, resolveOpenAIMaxOutputTokens } from './openai-routing.js';
 import type { AiTask, CopilotGuidance, CopilotResult, RepoSnapshot, ActiveWorkItem } from './types.js';
 
 const FEEDBACK_LOOP_PROMPT_POLICY = `
@@ -65,6 +66,15 @@ export async function createTasks(
 ): Promise<AiTask[]> {
   const compactContext = snapshot.files.map(f => `--- FILE: ${f.path} (${f.bytes} bytes) ---\n${f.content}`).join('\n\n');
   const guidanceContext = buildGuidanceContext(guidance, recentResults);
+  const model = resolveOpenAIModel(config, 'queue-generation');
+  const maxOutputTokens = resolveOpenAIMaxOutputTokens(config, 'queue-generation');
+  const promptCache = buildPromptCacheOptions(config, [
+    snapshot.owner,
+    snapshot.repo,
+    snapshot.baseBranch,
+    'queue-generation',
+    model,
+  ]);
 
   const inputText = `
 You are creating the GitHub Copilot JackHammer Service coding-agent issue queue for ${snapshot.owner}/${snapshot.repo} on ${snapshot.baseBranch}.
@@ -93,7 +103,9 @@ Repo context:\n${compactContext}
   }
 
   const response = await client.responses.create({
-    model: config.OPENAI_MODEL,
+    model,
+    max_output_tokens: maxOutputTokens,
+    ...promptCache,
     instructions: 'You are a senior staff-level engineer producing concise, actionable JackHammer queue GitHub issues for GitHub Copilot coding agent. Select the highest-value next command, enforce industry-standard engineering quality, and keep tasks small, validated, and reviewable. Enforce feedback-loop policy: active work first, answer Copilot questions first, fix failed checks first, then continue with reprioritized queue. Never bypass checks, add secrets, or propose broad unvalidated rewrites. Always return parseable JSON only.',
     input: [{ role: 'user', content }],
     text: {
@@ -150,6 +162,15 @@ export async function createContinuationComment(
   prContext: string,
 ): Promise<string> {
   const guidanceContext = buildGuidanceContext(guidance, recentResults);
+  const model = resolveOpenAIModel(config, 'continuation-comment');
+  const maxOutputTokens = resolveOpenAIMaxOutputTokens(config, 'continuation-comment');
+  const promptCache = buildPromptCacheOptions(config, [
+    config.GITHUB_OWNER,
+    config.GITHUB_REPO,
+    activeWork.issueNumber.toString(),
+    'continuation-comment',
+    model,
+  ]);
   const inputText = `
 You are the GitHub Copilot JackHammer Service autopilot continuing work on issue #${activeWork.issueNumber}: "${activeWork.title}".
 
@@ -168,7 +189,9 @@ Return only the comment text, no JSON wrapper.
 `;
 
   const response = await client.responses.create({
-    model: config.OPENAI_MODEL,
+    model,
+    max_output_tokens: maxOutputTokens,
+    ...promptCache,
     instructions: 'You are writing a concise GitHub comment to continue a Copilot coding task. Be direct and actionable.',
     input: [{ role: 'user', content: [{ type: 'input_text', text: inputText }] }],
   });

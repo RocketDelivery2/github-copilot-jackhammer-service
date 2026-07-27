@@ -22,6 +22,15 @@ describe('config', () => {
       });
 
       assert.equal(parsed.ADAPTIVE_QUEUE_ENABLED, false);
+      assert.equal(parsed.GITHUB_REPO, 'github-copilot-jackhammer-service');
+      assert.equal(parsed.REPO_URL, 'https://github.com/RocketDelivery2/github-copilot-jackhammer-service.git');
+      assert.equal(parsed.OPENAI_MODEL, 'gpt-5.6-terra');
+      assert.equal(parsed.OPENAI_MODEL_QUEUE, 'gpt-5.6-terra');
+      assert.equal(parsed.OPENAI_MODEL_CONTINUATION, 'gpt-5.6-luna');
+      assert.equal(parsed.OPENAI_PROMPT_CACHE_ENABLED, true);
+      assert.equal(parsed.OPENAI_PROMPT_CACHE_RETENTION, '24h');
+      assert.equal(parsed.OPENAI_MAX_OUTPUT_TOKENS_QUEUE, 1200);
+      assert.equal(parsed.OPENAI_MAX_OUTPUT_TOKENS_CONTINUATION, 256);
       assert.equal(parsed.ADAPTIVE_EVENT_JOURNAL_PATH, '.ai/adaptive-preview-event-journal.json');
       assert.equal(parsed.ADAPTIVE_EVENT_JOURNAL_RETENTION, 200);
       assert.equal(parsed.ADAPTIVE_PREVIEW_CAPTURE_SOURCE, 'recent-results');

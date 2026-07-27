@@ -73,11 +73,15 @@ See [`.env.example`](./.env.example) for the full reference.
 
 ```dotenv
 OPENAI_API_KEY=sk-your-openai-api-key
-OPENAI_MODEL=gpt-5.2
+OPENAI_MODEL=gpt-5.6-terra
+OPENAI_MODEL_QUEUE=gpt-5.6-terra
+OPENAI_MODEL_CONTINUATION=gpt-5.6-luna
+OPENAI_PROMPT_CACHE_ENABLED=true
+OPENAI_PROMPT_CACHE_RETENTION=24h
 GITHUB_TOKEN=github_pat_your-token
 GITHUB_OWNER=RocketDelivery2
-GITHUB_REPO=TeamBuilder
-REPO_URL=https://github.com/RocketDelivery2/TeamBuilder.git
+GITHUB_REPO=github-copilot-jackhammer-service
+REPO_URL=https://github.com/RocketDelivery2/github-copilot-jackhammer-service.git
 BASE_BRANCH=main
 DRY_RUN=true
 RUN_ONCE=true
@@ -118,7 +122,7 @@ MERGE_METHOD=squash
 
 ## GitHub token permissions
 
-Fine-grained PAT scoped to `RocketDelivery2/TeamBuilder`:
+Fine-grained PAT scoped to `RocketDelivery2/github-copilot-jackhammer-service`:
 
 | Permission | Level |
 |---|---|
@@ -135,12 +139,12 @@ Fine-grained PAT scoped to `RocketDelivery2/TeamBuilder`:
 
 ## Finding the Copilot assignee login
 
-1. Create a temporary issue in `RocketDelivery2/TeamBuilder`.
+1. Create a temporary issue in `RocketDelivery2/github-copilot-jackhammer-service`.
 2. Manually assign it to **Copilot** in the GitHub UI.
 3. Run:
 
 ```bash
-gh issue view <issue-number> --repo RocketDelivery2/TeamBuilder --json assignees
+gh issue view <issue-number> --repo RocketDelivery2/github-copilot-jackhammer-service --json assignees
 ```
 
 4. Copy the returned `login` value into your `.env`:
@@ -324,11 +328,15 @@ git push -u origin main
 | Variable | Value / Sensitivity |
 |---|---|
 | `JackHammer.OpenAI.ApiKey` | **Sensitive** |
-| `JackHammer.OpenAI.Model` | `gpt-5.2` |
+| `JackHammer.OpenAI.Model` | `gpt-5.6-terra` |
+| `JackHammer.OpenAI.ModelQueue` | `gpt-5.6-terra` |
+| `JackHammer.OpenAI.ModelContinuation` | `gpt-5.6-luna` |
+| `JackHammer.OpenAI.PromptCacheEnabled` | `true` |
+| `JackHammer.OpenAI.PromptCacheRetention` | `24h` |
 | `JackHammer.GitHub.Token` | **Sensitive** |
 | `JackHammer.GitHub.Owner` | `RocketDelivery2` |
-| `JackHammer.GitHub.Repo` | `TeamBuilder` |
-| `JackHammer.GitHub.RepoUrl` | `https://github.com/RocketDelivery2/TeamBuilder.git` |
+| `JackHammer.GitHub.Repo` | `github-copilot-jackhammer-service` |
+| `JackHammer.GitHub.RepoUrl` | `https://github.com/RocketDelivery2/github-copilot-jackhammer-service.git` |
 | `JackHammer.GitHub.BaseBranch` | `main` |
 | `JackHammer.Copilot.Assignee` | `<exact-copilot-agent-login>` |
 | `JackHammer.FullAutopilot` | `true` |
@@ -349,7 +357,7 @@ This project is intentionally named **GitHub Copilot JackHammer Service** throug
 
 See [`docs/setup.md`](./docs/setup.md) for:
 - Full JackHammer repo GitHub settings
-- Full TeamBuilder (serviced repo) GitHub settings
+- Full `github-copilot-jackhammer-service` serviced-repo GitHub settings
 - Validation steps
 
 See [`docs/INDUSTRY_STANDARDS_BRAIN.md`](./docs/INDUSTRY_STANDARDS_BRAIN.md) for:
