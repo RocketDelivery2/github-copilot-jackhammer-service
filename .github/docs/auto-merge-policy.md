@@ -2,17 +2,21 @@
 
 ## Overview
 
-The `auto-merge.yml` workflow arms squash auto-merge on qualifying PRs targeting `main`.
-It is **not** a universal merge gate — human-authored PRs require explicit opt-in via
-the `auto-merge` label.
+The `auto-merge.yml` workflow only arms squash auto-merge for approved bot-authored PRs.
+Human-authored PRs are always blocked, even if they carry the `auto-merge` label.
+`dependabot-auto-merge.yml` handles Dependabot separately with the same merge-readiness
+checks.
 
 ## Safety Gates (ALL must pass)
 
 | # | Gate | Condition | Block behavior |
 |---|------|-----------|----------------|
-| 1 | Draft check | PR must not be in draft state | Blocked until marked ready for review |
-| 2 | Explicit allow | PR must have `auto-merge` label OR author is `dependabot[bot]` | Blocked; add label to opt in |
-| 3 | Policy labels | PR must NOT have `security`, `breaking-change`, or `do-not-merge` label | Blocked unconditionally; requires human merge |
+| 1 | Bot author | PR author must be an approved bot | Blocked; human-authored PRs are never auto-merged |
+| 2 | Policy label | Bot PRs must carry the `auto-merge` label | Blocked; add the label only for approved bot PRs |
+| 3 | Draft check | PR must not be in draft state | Blocked until marked ready for review |
+| 4 | Policy labels | PR must NOT have `security`, `breaking-change`, or `do-not-merge` label | Blocked unconditionally; requires human merge |
+| 5 | Review gate | Required review must be approved | Blocked until the review decision is `APPROVED` |
+| 6 | Check gate | Required checks must be clean | Blocked until merge state is `CLEAN` |
 
 If any gate fails, auto-merge is NOT armed. The reason is written to the
 workflow step summary for every evaluation (pass or block).
@@ -21,16 +25,17 @@ workflow step summary for every evaluation (pass or block).
 
 ### Enable auto-merge for a PR
 
-1. Ensure the PR is marked **ready for review** (not draft).
+1. Ensure the PR is authored by an approved bot account.
 2. Add the **`auto-merge`** label.
-3. The workflow evaluates gates on the next trigger event (label add, push, or
+3. Ensure the PR is marked **ready for review** (not draft).
+4. The workflow evaluates gates on the next trigger event (label add, push, or
    `ready_for_review`). If all gates pass, squash auto-merge is armed and will
-   fire when required checks complete.
+   only fire after required reviews and checks are green.
 
 ### Disable auto-merge for a specific PR
 
 - Remove the `auto-merge` label, **OR**
-- Add the `do-not-merge` label (blocks Gate 3 unconditionally).
+- Add the `do-not-merge` label (blocks Gate 4 unconditionally).
 
 To immediately disarm an already-armed auto-merge:
 
@@ -80,20 +85,22 @@ git log --oneline -5 origin/main
 | Scenario | Before (unsafe) | After (hardened) |
 |----------|-----------------|-----------------|
 | New branch pushed | Opens non-draft PR, arms merge immediately | Opens **draft** PR; no merge armed |
-| PR opened (no label) | Auto-approves + arms squash merge | Gate 2 blocks; merge NOT armed |
-| PR with `auto-merge` label, not draft | Arms merge | All gates evaluated; arms if all pass |
-| Draft PR with `auto-merge` label | Arms merge | Gate 1 blocks; merge NOT armed |
-| PR with `security` label | Arms merge | Gate 3 blocks; merge NOT armed |
+| Human PR with `auto-merge` label | Auto-approves + arms squash merge | Gate 1 blocks; merge NOT armed |
+| Bot PR without `auto-merge` label | Arms merge | Gate 2 blocks; merge NOT armed |
+| Bot PR with `auto-merge` label, not draft | Arms merge | All gates evaluated; arms only if checks/reviews are green |
+| Draft bot PR with `auto-merge` label | Arms merge | Gate 3 blocks; merge NOT armed |
+| PR with `security` label | Arms merge | Gate 4 blocks; merge NOT armed |
 | Dependabot PR | Arms merge via separate workflow | Handled by `dependabot-auto-approve.yml` + `dependabot-auto-merge.yml` |
 | Gate decision visibility | None | Written to step summary on every evaluation |
 
 ## Allowed Bot Actors
 
-The following bot actors are treated as having an implicit explicit-allow (Gate 2 pass):
+The following bot actors are supported by the policy:
 
-- `dependabot[bot]`
+- `dependabot[bot]` (via the dedicated Dependabot workflow)
+- Any other approved bot account that carries the `auto-merge` label
 
-All other actors — including human users and other bots — must add the `auto-merge` label.
+Human users are never eligible for auto-merge.
 
 ## Strongly Recommended: Add Branch Protection
 
