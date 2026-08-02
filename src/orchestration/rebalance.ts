@@ -111,10 +111,13 @@ function promoteOrInsertFailureFix(items: WorkItem[], signals: readonly QueueSig
 }
 
 function insertConversationItems(items: WorkItem[], signals: readonly QueueSignal[]): void {
+  // Snapshot existing IDs into a Set for O(1) lookup; also track newly inserted IDs.
+  const existingIds = new Set(items.map(item => item.id));
   for (const signal of signals) {
     const conversation = createConversationWorkItem(signal);
     if (!conversation) continue;
-    if (items.some(item => item.id === conversation.id)) continue;
+    if (existingIds.has(conversation.id)) continue;
+    existingIds.add(conversation.id);
     items.push(conversation);
   }
 }
@@ -153,14 +156,15 @@ function cloneWorkItem(item: WorkItem): WorkItem {
 
 function mergeSignals(signals: QueueSignal[]): QueueSignal[] {
   const merged: QueueSignal[] = [];
+  // Composite key: kind + workItemId + targetItemId — O(n) instead of O(n²).
+  const seen = new Set<string>();
 
   for (const signal of signals) {
-    const exists = merged.some(existing =>
-      existing.kind === signal.kind
-      && existing.workItemId === signal.workItemId
-      && existing.targetItemId === signal.targetItemId
-    );
-    if (!exists) merged.push(signal);
+    const key = `${signal.kind}\0${signal.workItemId ?? ''}\0${signal.targetItemId ?? ''}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(signal);
+    }
   }
 
   return merged;
