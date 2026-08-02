@@ -1,0 +1,302 @@
+name: improvement-pr-bot
+
+on:
+  schedule:
+    # Runs daily at 05:00 UTC
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — show selected task without creating PR'
+        required: false
+        default: 'false'
+        type: boolean
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  select-and-apply:
+    name: Select backlog task and open improvement PR
+    runs-on: ubuntu-latest
+
+    # For label trigger, only fire when the 'autofix' label is added
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.label.name == 'autofix')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Parse backlog and select highest-priority actionable task
+        id: select
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Use the extracted script for readability and testability
+          SELECTED=$(python3 .github/scripts/select-backlog-task.py 2>/dev/null || echo "")
+
+          if [ -z "$SELECTED" ]; then
+            echo "No actionable backlog items found."
+            echo "id=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "$SELECTED" >> $GITHUB_OUTPUT
+          echo "Selected task:"
+          echo "$SELECTED"
+
+      - name: Check for existing open PR for this task
+        id: check_existing
+        if: steps.select.outputs.id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH_PREFIX: ${{ steps.select.outputs.branch_prefix }}
+        run: |
+          set +e
+          EXISTING=$(gh pr list \
+            --state open \
+            --json headRefName,number \
+            --jq "[.[] | select(.headRefName | startswith(\"$BRANCH_PREFIX\"))] | first | .number" \
+            2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "PR #$EXISTING already open for branch prefix $BRANCH_PREFIX; skipping."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+          set -e
+
+      - name: Apply safe automatic changes
+        id: apply
+        if: |
+          steps.select.outputs.id != '' &&
+          steps.check_existing.outputs.skip == 'false' &&
+          steps.select.outputs.safe == 'true' &&
+          github.event.inputs.dry_run != 'true'
+        env:
+          TASK_ID: ${{ steps.select.outputs.id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          CHANGED=false
+
+          # ── Task: add-audit-label ────────────────────────────────────────────
+          if [ "$TASK_ID" = "add-audit-label" ]; then
+            echo "Ensuring automation labels exist..."
+            gh label create automation --color '7057ff' --description 'Created by automation workflows' 2>/dev/null || true
+            gh label create audit --color 'e4e669' --description 'Continuous audit findings' 2>/dev/null || true
+            gh label create architecture --color 'c2e0c6' --description 'Architecture review findings' 2>/dev/null || true
+            gh label create quality --color 'fef2c0' --description 'Engineering quality review findings' 2>/dev/null || true
+            gh label create improvement --color '0075ca' --description 'Automated improvement PR' 2>/dev/null || true
+            # This task has no file changes; mark as instruction-only
+            echo "changed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # ── Task: update-readme-ci-badge ────────────────────────────────────
+          if [ "$TASK_ID" = "update-readme-ci-badge" ]; then
+            BADGE='[![CI](https://github.com/RocketDelivery2/github-copilot-jackhammer-service/actions/workflows/test-and-build.yml/badge.svg)](https://github.com/RocketDelivery2/github-copilot-jackhammer-service/actions/workflows/test-and-build.yml)'
+            if grep -q "test-and-build.yml/badge.svg" README.md 2>/dev/null; then
+              echo "CI badge already present; skipping."
+              echo "changed=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            # Insert badge after the first H1 line
+            python3 - <<'PYEOF'
+          with open("README.md") as f:
+              lines = f.readlines()
+          out = []
+          inserted = False
+          for line in lines:
+              out.append(line)
+              if not inserted and line.startswith("# "):
+                  out.append("\n[![CI](https://github.com/RocketDelivery2/github-copilot-jackhammer-service/actions/workflows/test-and-build.yml/badge.svg)](https://github.com/RocketDelivery2/github-copilot-jackhammer-service/actions/workflows/test-and-build.yml)\n")
+                  inserted = True
+          with open("README.md", "w") as f:
+              f.writelines(out)
+          PYEOF
+            CHANGED=true
+          fi
+
+          # ── Task: add-editorconfig ───────────────────────────────────────────
+          if [ "$TASK_ID" = "add-editorconfig" ]; then
+            if [ -f ".editorconfig" ]; then
+              echo ".editorconfig already exists; skipping."
+              echo "changed=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            cat > .editorconfig <<'EDITOREOF'
+          root = true
+
+          [*]
+          indent_style = space
+          indent_size = 2
+          end_of_line = lf
+          charset = utf-8
+          trim_trailing_whitespace = true
+          insert_final_newline = true
+
+          [*.md]
+          trim_trailing_whitespace = false
+          EDITOREOF
+            CHANGED=true
+          fi
+
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+
+      - name: Create improvement branch and PR
+        if: |
+          steps.select.outputs.id != '' &&
+          steps.check_existing.outputs.skip == 'false' &&
+          github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TASK_ID: ${{ steps.select.outputs.id }}
+          TASK_TITLE: ${{ steps.select.outputs.title }}
+          TASK_LABEL: ${{ steps.select.outputs.label }}
+          BRANCH_PREFIX: ${{ steps.select.outputs.branch_prefix }}
+          SAFE: ${{ steps.select.outputs.safe }}
+          CHANGED: ${{ steps.apply.outputs.changed }}
+        run: |
+          set -euo pipefail
+
+          BRANCH="${BRANCH_PREFIX}-${{ github.run_number }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+
+          if [ "${CHANGED:-false}" = "true" ]; then
+            git add -A
+            git diff --cached --stat
+            git commit -m "automation: ${TASK_TITLE}"
+          else
+            # No file changes; create a marker file so the branch/PR can be opened.
+            # Marker files accumulate in .github/automation-runs/ on the branch and
+            # are deleted when the branch is removed after merge (--delete-branch).
+            # The main branch never accumulates markers because instruction-only PRs
+            # require a human to implement changes before the branch is merged.
+            MARKER=".github/automation-runs/$(echo "$TASK_ID" | tr '/' '-')-${{ github.run_number }}.txt"
+            mkdir -p "$(dirname "$MARKER")"
+            echo "Automation run: task=$TASK_ID run=${{ github.run_number }} date=$(date -u +%Y-%m-%d)" > "$MARKER"
+            git add "$MARKER"
+            git commit -m "automation: marker for $TASK_TITLE"
+          fi
+
+          git push origin "$BRANCH"
+
+          # Read description/tasks from backlog for PR body
+          DESCRIPTION=$(python3 - <<'PYEOF'
+          import re
+          with open(".github/improvement-backlog.yml") as f:
+              content = f.read()
+          import os
+          task_id = os.environ["TASK_ID"]
+          entries = re.split(r'\n  - id:', content)
+          for block in entries[1:]:
+              block = "  - id:" + block
+              m = re.search(r'^\s+id:\s*(.+)$', block, re.MULTILINE)
+              if m and m.group(1).strip() == task_id:
+                  desc = re.search(r'description:\s*>\n((?:[ \t]+.+\n)+)', block)
+                  tasks_block = re.search(r'tasks:\n((?:[ \t]+-.+\n)+)', block)
+                  desc_text = re.sub(r'\s+', ' ', desc.group(1)).strip() if desc else ""
+                  tasks_lines = re.findall(r'[ \t]+- "?(.+?)"?\n', tasks_block.group(1)) if tasks_block else []
+                  print(desc_text)
+                  print("---TASKS---")
+                  for t in tasks_lines:
+                      print(f"- {t}")
+                  break
+          PYEOF
+          )
+
+          DESC=$(echo "$DESCRIPTION" | sed '/^---TASKS---/q' | head -n -1)
+          TASKS=$(echo "$DESCRIPTION" | sed -n '/^---TASKS---/,$ p' | tail -n +2)
+
+          PR_BODY_FILE=$(mktemp)
+          {
+            echo "## Automated Improvement: ${TASK_TITLE}"
+            echo ""
+            echo "**Task ID:** \`${TASK_ID}\`"
+            echo "**Label:** \`${TASK_LABEL}\`"
+            echo "**Auto-applied:** ${SAFE}"
+            echo ""
+            echo "### Description"
+            echo ""
+            printf '%s\n' "$DESC"
+            echo ""
+            echo "### Tasks / Checklist"
+            echo ""
+            printf '%s\n' "$TASKS"
+            echo ""
+            echo "### Safety"
+            echo ""
+            echo "- [ ] All CI checks pass"
+            echo "- [ ] Changes are minimal and targeted"
+            echo "- [ ] No secrets or credentials introduced"
+            echo ""
+            echo "---"
+            echo "*Opened automatically by the improvement-pr-bot workflow (run #${{ github.run_number }}).*"
+            echo "*This PR requires a human review before merging.*"
+          } > "$PR_BODY_FILE"
+
+          gh pr create \
+            --title "${TASK_TITLE}" \
+            --body-file "$PR_BODY_FILE" \
+            --base main \
+            --head "$BRANCH" \
+            --label "automation" \
+            --label "improvement" \
+            --label "needs-review" \
+            2>/dev/null || \
+          gh pr create \
+            --title "${TASK_TITLE}" \
+            --body-file "$PR_BODY_FILE" \
+            --base main \
+            --head "$BRANCH"
+          rm -f "$PR_BODY_FILE"
+
+          echo "PR opened for branch $BRANCH"
+
+      - name: Dry run summary
+        if: github.event.inputs.dry_run == 'true'
+        env:
+          TASK_ID: ${{ steps.select.outputs.id }}
+          TASK_TITLE: ${{ steps.select.outputs.title }}
+          SAFE: ${{ steps.select.outputs.safe }}
+          PRIORITY: ${{ steps.select.outputs.priority }}
+        run: |
+          {
+            echo "## Improvement PR Bot — Dry Run"
+            echo ""
+            echo "Selected task (would have been applied):"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| ID | \`$TASK_ID\` |"
+            echo "| Title | $TASK_TITLE |"
+            echo "| Priority | $PRIORITY |"
+            echo "| Safe (auto-apply) | $SAFE |"
+            echo ""
+            echo "No branch or PR was created."
+          } >> $GITHUB_STEP_SUMMARY
