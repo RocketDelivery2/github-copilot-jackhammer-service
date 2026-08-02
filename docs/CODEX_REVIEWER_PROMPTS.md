@@ -22,6 +22,7 @@ They are intended to support small, validated PRs by making review expectations 
 | `regression-test-planner.md` | Read-only planner for targeted regression coverage. |
 | `release-manager.md` | Release-readiness review for validation, scope, rollback, and operational risk. |
 | `azure-readiness-reviewer.md` | Azure/cloud readiness review without enabling deployment prematurely. |
+| `best-practices-reviewer.md` | Engineering best-practices lane for bottlenecks, code smells, SOLID/design quality, and maintainability actions. |
 | `merge-governor.md` | Final merge-readiness review based on scope, checks, branch protection, and safety. |
 
 ## Recommended usage
@@ -47,6 +48,7 @@ For a normal PR review:
 | Secret, auth, shell, or permission change | `security-reviewer.md` | `merge-governor.md` |
 | Dependency, workflow, package, or Docker change | `dependency-reviewer.md` | `security-reviewer.md` |
 | README, docs, prompt, or runbook change | `docs-reviewer.md` | `merge-governor.md` |
+| Refactor quality, code smells, maintainability, or performance hygiene | `best-practices-reviewer.md` | `regression-test-planner.md` |
 | Azure or deployment-readiness change | `azure-readiness-reviewer.md` | `release-manager.md` |
 | Final pre-merge check | `merge-governor.md` | none |
 

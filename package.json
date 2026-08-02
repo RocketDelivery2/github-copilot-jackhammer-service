@@ -33,7 +33,8 @@
     "once": "tsx src/index.ts --once",
     "doctor": "tsx src/index.ts --doctor",
     "repo:metadata": "bash scripts/set-repo-metadata.sh",
-    "discussion:writer": "node --import tsx src/discussion-writer-cli.ts"
+    "discussion:writer": "node --import tsx src/discussion-writer-cli.ts",
+    "reviewer:best-practices": "node --import tsx src/best-practices-reviewer-cli.ts"
   },
   "dependencies": {
     "@octokit/rest": "^21.1.1",
