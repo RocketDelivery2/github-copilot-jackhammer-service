@@ -39,10 +39,31 @@ async function execFile(command: string, args: string[], cwd: string): Promise<v
   });
 }
 
+export function buildZipArchiveCommand(platform: NodeJS.Platform, workDir: string, outPath: string): { command: string; args: string[] } {
+  if (platform === 'win32') {
+    return {
+      command: 'powershell.exe',
+      args: [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        buildWindowsZipScript(workDir, outPath),
+      ],
+    };
+  }
+
+  return {
+    command: 'zip',
+    args: ['-qr', outPath, '.', '-x', '.git/*', 'node_modules/*', 'dist/*', 'build/*', '.env*'],
+  };
+}
+
 export async function zipRepo(workDir: string, outPath: string): Promise<string> {
   await fs.mkdir(path.dirname(outPath), { recursive: true });
   await fs.rm(outPath, { force: true });
-  await execFile('zip', ['-qr', outPath, '.', '-x', '.git/*', 'node_modules/*', 'dist/*', 'build/*', '.env*'], workDir);
+  const archiveCommand = buildZipArchiveCommand(process.platform, workDir, outPath);
+  await execFile(archiveCommand.command, archiveCommand.args, workDir);
   return outPath;
 }
 
@@ -115,4 +136,23 @@ function scoreFile(file: string): number {
   if (file.includes('/components/') || file.startsWith('components/')) return 4;
   if (file.includes('test') || file.includes('spec')) return 5;
   return 10;
+}
+
+function buildWindowsZipScript(workDir: string, outPath: string): string {
+  const escapedWorkDir = workDir.replace(/'/g, "''");
+  const escapedOutPath = outPath.replace(/'/g, "''");
+
+  return [
+    '$ErrorActionPreference = "Stop";',
+    `$workDir = '${escapedWorkDir}';`,
+    `$outPath = '${escapedOutPath}';`,
+    '$root = (Resolve-Path -LiteralPath $workDir).Path.TrimEnd("\\");',
+    'Set-Location -LiteralPath $root;',
+    '$files = Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object {',
+    '  $relative = $_.FullName.Substring($root.Length + 1).Replace("\\", "/");',
+    '  $relative -notmatch "(^|/)(\\.git|node_modules|dist|build)(/|$)" -and $relative -notmatch "(^|/)\\.env(\\.|$)"',
+    '} | ForEach-Object { $_.FullName.Substring($root.Length + 1) };',
+    'if (-not $files -or $files.Count -eq 0) { throw "No files available to archive." }',
+    'Compress-Archive -LiteralPath $files -DestinationPath $outPath -Force;',
+  ].join(' ');
 }

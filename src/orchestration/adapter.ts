@@ -1013,6 +1013,3 @@ function normalizeSkillBasePath(skillPath: string | undefined, skillName: string
 function isEnoent(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
-
-
-

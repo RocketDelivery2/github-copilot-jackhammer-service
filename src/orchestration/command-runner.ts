@@ -227,4 +227,3 @@ function commandEvidence(result: CommandExecutionResult): string {
   const trimmed = evidence.trim().replace(/\s+/g, ' ');
   return trimmed.length > 200 ? `${trimmed.slice(0, 197)}...` : trimmed;
 }
-

@@ -6,25 +6,36 @@ export type SkillSelectionOptions = {
   fallbackSkillName?: string;
 };
 
+const skillDescriptionTokenCache = new WeakMap<SkillMetadata, string[]>();
+
 export function selectSkillsForTask(
   index: SkillMetadataIndex,
   task: SkillTaskLike,
   options: SkillSelectionOptions = {},
 ): SkillMatch[] {
   const text = normalizeTaskText(task);
-  const matches = index.skills
-    .map(skill => scoreSkill(skill, text))
-    .filter((entry): entry is SkillMatch => entry.score > 0)
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-      return left.skill.name.localeCompare(right.skill.name);
-    });
-
   const limit = Math.max(1, Math.floor(options.limit ?? 5));
+  const matches: SkillMatch[] = [];
+
+  for (const skill of index.skills) {
+    const match = scoreSkill(skill, text);
+    if (match.score > 0) {
+      matches.push(match);
+    }
+  }
+
+  matches.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    return left.skill.name.localeCompare(right.skill.name);
+  });
+
   if (matches.length > 0) {
-    return matches.slice(0, limit);
+    if (matches.length > limit) {
+      matches.length = limit;
+    }
+    return matches;
   }
 
   if (!options.fallbackSkillName) {
@@ -59,7 +70,7 @@ function scoreSkill(skill: SkillMetadata, taskText: string): SkillMatch {
     }
   }
 
-  for (const token of tokenize(skill.description)) {
+  for (const token of getSkillDescriptionTokens(skill)) {
     if (containsPhrase(taskText, token)) {
       score += 2;
       reasons.push(`description:${token}`);
@@ -77,8 +88,8 @@ function scoreSkill(skill: SkillMetadata, taskText: string): SkillMatch {
 }
 
 function normalizeTaskText(task: SkillTaskLike): string {
-  return [task.title ?? '', task.summary ?? '', task.description ?? '', task.command ?? '']
-    .join(' ')
+  return `${task.title ?? ''} ${task.summary ?? ''} ${task.description ?? ''} ${task.command ?? ''}`
+    .trim()
     .toLowerCase();
 }
 
@@ -88,9 +99,23 @@ function containsPhrase(haystack: string, phrase: string): boolean {
 }
 
 function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9-]+/g)
-    .map(token => token.trim())
-    .filter(token => token.length >= 4);
+  const tokens: string[] = [];
+
+  for (const token of text.toLowerCase().split(/[^a-z0-9-]+/g)) {
+    const trimmed = token.trim();
+    if (trimmed.length >= 4) {
+      tokens.push(trimmed);
+    }
+  }
+
+  return tokens;
+}
+
+function getSkillDescriptionTokens(skill: SkillMetadata): string[] {
+  const cached = skillDescriptionTokenCache.get(skill);
+  if (cached) return cached;
+
+  const tokens = tokenize(skill.description);
+  skillDescriptionTokenCache.set(skill, tokens);
+  return tokens;
 }
