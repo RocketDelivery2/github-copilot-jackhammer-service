@@ -31,7 +31,13 @@ import type { ApprovalStatePersistenceRecord } from '../skills/approval-state-pe
 import { buildSkillExecutionPlan } from '../skills/execution-plan.js';
 import { loadSkillDocumentFromFile } from '../skills/loader.js';
 import { selectSkillsForTask } from '../skills/selector.js';
-import { evaluateSkillResourcePolicy } from '../skills/trust-policy.js';
+import {
+  evaluateDefaultSkillTrustPolicy,
+} from './skill-policy-gating.js';
+import type {
+  AdaptivePreviewTrustPolicySummary,
+  SkillTrustPolicyStrategy,
+} from './skill-policy-gating.js';
 import type {
   ApprovalDecisionInput,
   SkillApprovalCheckpoint,
@@ -142,13 +148,7 @@ export type AdaptivePreviewSkillSelection = {
   reasons: string[];
   risk: 'low' | 'medium' | 'high';
   allowedTools: string[];
-  trustPolicySummary: {
-    instructionsReadAllowed: boolean;
-    referencesReadAllowed: boolean;
-    assetsReadAllowed: boolean;
-    scriptsRequireHumanApproval: boolean;
-    scriptsAutoExecutable: boolean;
-  };
+  trustPolicySummary: AdaptivePreviewTrustPolicySummary;
 };
 
 export type AdaptivePreviewSkillSelectionOptions = {
@@ -157,6 +157,7 @@ export type AdaptivePreviewSkillSelectionOptions = {
   tasks: readonly AdaptivePreviewSkillTask[];
   maxSelections?: number;
   maxMatchesPerTask?: number;
+  trustPolicyStrategy?: SkillTrustPolicyStrategy;
 };
 
 export type AdaptivePreviewSkillExecutionPlanOptions = {
@@ -460,16 +461,11 @@ export function selectAdaptivePreviewSkills(
     return [];
   }
 
+  const trustPolicyStrategy = options.trustPolicyStrategy ?? evaluateDefaultSkillTrustPolicy;
   const selected: AdaptivePreviewSkillSelection[] = [];
   for (const task of options.tasks) {
     const matches = selectSkillsForTask(options.skillIndex, task, { limit: maxMatchesPerTask });
     for (const match of matches) {
-      const basePath = normalizeSkillBasePath(match.skill.skillPath, match.skill.name);
-      const instructionsPolicy = evaluateSkillResourcePolicy(`${basePath}/skill.md`);
-      const referencesPolicy = evaluateSkillResourcePolicy(`${basePath}/references/reference.md`);
-      const assetsPolicy = evaluateSkillResourcePolicy(`${basePath}/assets/asset.txt`);
-      const scriptsPolicy = evaluateSkillResourcePolicy(`${basePath}/scripts/example.ps1`);
-
       selected.push({
         taskId: task.id,
         skillName: match.skill.name,
@@ -478,13 +474,10 @@ export function selectAdaptivePreviewSkills(
         reasons: [...match.reasons],
         risk: match.skill.risk,
         allowedTools: [...match.skill.allowedTools],
-        trustPolicySummary: {
-          instructionsReadAllowed: instructionsPolicy.readAllowed,
-          referencesReadAllowed: referencesPolicy.readAllowed,
-          assetsReadAllowed: assetsPolicy.readAllowed,
-          scriptsRequireHumanApproval: scriptsPolicy.requiresHumanApproval,
-          scriptsAutoExecutable: scriptsPolicy.autoExecutable,
-        },
+        trustPolicySummary: trustPolicyStrategy({
+          skillPath: match.skill.skillPath,
+          skillName: match.skill.name,
+        }),
       });
     }
   }
@@ -995,19 +988,6 @@ function cloneSkillApprovalCheckpointTransition(
     transitionResult: transition.transitionResult,
     ...(transition.transitionReason !== undefined ? { transitionReason: transition.transitionReason } : {}),
   };
-}
-
-function normalizeSkillBasePath(skillPath: string | undefined, skillName: string): string {
-  if (!skillPath || skillPath.trim().length === 0) {
-    return `skills/${skillName}`;
-  }
-
-  const normalized = skillPath.replace(/\\/g, '/');
-  const suffix = '/skill.md';
-  if (normalized.toLowerCase().endsWith(suffix)) {
-    return normalized.slice(0, -suffix.length);
-  }
-  return normalized;
 }
 
 function isEnoent(error: unknown): boolean {

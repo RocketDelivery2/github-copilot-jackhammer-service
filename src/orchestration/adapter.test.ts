@@ -378,6 +378,49 @@ keywords: [validation, test, build, lint]
     assert.deepEqual(first, second);
   });
 
+  it('applies an injected trust-policy strategy for skill selection', () => {
+    const skillIndex = createSkillMetadataIndex([{
+      skillPath: 'skills/validation/skill.md',
+      markdown: `---
+name: validation
+description: Validate code changes with test build lint workflow.
+version: 1.0.0
+risk: low
+allowedTools: [npm.cmd]
+resourceHints: [package.json]
+keywords: [validation, test, build, lint]
+---
+`,
+    }]);
+
+    const invokedWith: string[] = [];
+    const selected = selectAdaptivePreviewSkills({
+      enabled: true,
+      skillIndex,
+      tasks: [{ id: 'task:validate', title: 'run test build lint validation' }],
+      trustPolicyStrategy: input => {
+        invokedWith.push(`${input.skillName}:${input.skillPath ?? 'missing'}`);
+        return {
+          instructionsReadAllowed: false,
+          referencesReadAllowed: false,
+          assetsReadAllowed: false,
+          scriptsRequireHumanApproval: true,
+          scriptsAutoExecutable: false,
+        };
+      },
+    });
+
+    assert.deepEqual(invokedWith, ['validation:skills/validation/skill.md']);
+    assert.equal(selected.length, 1);
+    assert.deepEqual(selected[0]?.trustPolicySummary, {
+      instructionsReadAllowed: false,
+      referencesReadAllowed: false,
+      assetsReadAllowed: false,
+      scriptsRequireHumanApproval: true,
+      scriptsAutoExecutable: false,
+    });
+  });
+
   it('captures preview agent delegation messages as deterministic journal records', async () => {
     const preview = createAdaptiveQueuePreview({
       agentDelegations: [
