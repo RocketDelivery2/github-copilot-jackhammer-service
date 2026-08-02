@@ -22,6 +22,8 @@ describe('config', () => {
       });
 
       assert.equal(parsed.ADAPTIVE_QUEUE_ENABLED, false);
+      assert.equal(parsed.GITHUB_REPO, 'github-copilot-jackhammer-service');
+      assert.equal(parsed.REPO_URL, 'https://github.com/RocketDelivery2/github-copilot-jackhammer-service.git');
       assert.equal(parsed.ADAPTIVE_EVENT_JOURNAL_PATH, '.ai/adaptive-preview-event-journal.json');
       assert.equal(parsed.ADAPTIVE_EVENT_JOURNAL_RETENTION, 200);
       assert.equal(parsed.ADAPTIVE_PREVIEW_CAPTURE_SOURCE, 'recent-results');
