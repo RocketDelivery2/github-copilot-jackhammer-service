@@ -5,10 +5,16 @@ import { spawn } from 'node:child_process';
 import type { Ignore } from 'ignore';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import type { RepoSnapshot, RepoFile } from './types.js';
-import { config } from './config.js';
+import type { AppConfig } from './config.js';
 
 const require = createRequire(import.meta.url);
 const ignoreFactory = require('ignore') as typeof import('ignore').default;
+let configPromise: Promise<AppConfig> | undefined;
+
+async function getConfig(): Promise<AppConfig> {
+  configPromise ??= import('./config.js').then(module => module.config);
+  return configPromise;
+}
 
 const DEFAULT_IGNORES = [
   '.git', 'node_modules', 'dist', 'build', '.next', '.turbo', 'coverage',
@@ -18,6 +24,7 @@ const DEFAULT_IGNORES = [
 ];
 
 export async function ensureRepo(workDir: string): Promise<SimpleGit> {
+  const config = await getConfig();
   await fs.mkdir(path.dirname(workDir), { recursive: true });
   try {
     await fs.access(path.join(workDir, '.git'));
@@ -86,6 +93,7 @@ function looksText(file: string): boolean {
 }
 
 export async function snapshotRepo(workDir: string, git: SimpleGit): Promise<RepoSnapshot> {
+  const config = await getConfig();
   const ig = ignoreFactory().add(DEFAULT_IGNORES);
   try {
     const gitignore = await fs.readFile(path.join(workDir, '.gitignore'), 'utf8');
