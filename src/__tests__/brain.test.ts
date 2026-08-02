@@ -293,4 +293,22 @@ describe('rebalanceQueue', () => {
     assert.equal(rebalanced[1]!.title, 'Task B');
     assert.equal(rebalanced[2]!.title, 'Task C');
   });
+
+  it('preserves input order for tied scores', () => {
+    const queue = [
+      makeItem('Second tied task', 'medium'),
+      makeItem('First tied task', 'medium'),
+    ];
+    const rebalanced = rebalanceQueue(queue, {
+      guidance: null,
+      failedChecks: false,
+      hasTests: false,
+      hasBuildIssue: false,
+      hasLintIssue: false,
+      isProductionReady: false,
+    });
+
+    assert.equal(rebalanced[0]!.title, 'Second tied task');
+    assert.equal(rebalanced[1]!.title, 'First tied task');
+  });
 });

@@ -1,0 +1,151 @@
+name: controls-audit
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  controls-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate controls
+        id: audit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          FAIL=0
+          REPORT_FILE=controls-audit-report.md
+          : > "$REPORT_FILE"
+
+          pass() { echo "- PASS: $1" >> "$REPORT_FILE"; }
+          fail() { echo "- FAIL: $1" >> "$REPORT_FILE"; FAIL=1; }
+
+          echo "## Controls audit report" >> "$REPORT_FILE"
+          echo "" >> "$REPORT_FILE"
+          echo "### Branch protection: main" >> "$REPORT_FILE"
+
+          BP_JSON=$(gh api "repos/$REPO/branches/main/protection" 2>/dev/null || true)
+          if [ -z "$BP_JSON" ]; then
+            fail "Unable to read branch protection for main (missing protection or insufficient permissions)."
+          else
+            PR_REQUIRED=$(echo "$BP_JSON" | jq 'has("required_pull_request_reviews") and (.required_pull_request_reviews.required_approving_review_count >= 1)')
+            STRICT_UPTODATE=$(echo "$BP_JSON" | jq '.required_status_checks.strict == true')
+            HAS_TEST_BUILD=$(echo "$BP_JSON" | jq '(.required_status_checks.contexts // []) | index("test-and-build") != null')
+            HAS_CODEQL=$(echo "$BP_JSON" | jq '(.required_status_checks.contexts // []) | index("CodeQL") != null')
+            FORCE_PUSH_DISABLED=$(echo "$BP_JSON" | jq '.allow_force_pushes.enabled == false')
+            DELETIONS_DISABLED=$(echo "$BP_JSON" | jq '.allow_deletions.enabled == false')
+
+            [ "$PR_REQUIRED" = "true" ] && pass "Require PR + >=1 approving review enabled" || fail "Require PR + >=1 approving review not enforced"
+            [ "$STRICT_UPTODATE" = "true" ] && pass "Require branches up to date enabled" || fail "Require branches up to date is disabled"
+            [ "$HAS_TEST_BUILD" = "true" ] && pass "Required check includes test-and-build" || fail "Required check missing: test-and-build"
+            [ "$HAS_CODEQL" = "true" ] && pass "Required check includes CodeQL" || fail "Required check missing: CodeQL"
+            [ "$FORCE_PUSH_DISABLED" = "true" ] && pass "Force pushes disabled" || fail "Force pushes are allowed"
+            [ "$DELETIONS_DISABLED" = "true" ] && pass "Branch deletions disabled" || fail "Branch deletions are allowed"
+          fi
+
+          echo "" >> "$REPORT_FILE"
+          echo "### Workflow controls" >> "$REPORT_FILE"
+
+          check_workflow() {
+            local file="$1"
+            local has_deny has_guard has_summary merge_count guard_count
+
+            if [ ! -f "$file" ]; then
+              fail "$file missing"
+              return
+            fi
+
+            has_deny=$(grep -E 'security|breaking-change|do-not-merge' "$file" >/dev/null && echo true || echo false)
+            has_guard=$(grep -E "if:\s*steps\.gates\.outputs\.gate_pass\s*==\s*'true'" "$file" >/dev/null && echo true || echo false)
+            has_summary=$(grep -E '\$GITHUB_STEP_SUMMARY|summary' "$file" >/dev/null && echo true || echo false)
+
+            merge_count=$(grep -c 'gh pr merge' "$file" || true)
+            guard_count=$(grep -Ec "if:\s*steps\.gates\.outputs\.gate_pass\s*==\s*'true'" "$file" || true)
+
+            [ "$has_deny" = "true" ] && pass "$file deny-label blocking present" || fail "$file deny-label blocking missing"
+            [ "$has_guard" = "true" ] && pass "$file guarded merge condition present" || fail "$file guarded merge condition missing"
+            [ "$has_summary" = "true" ] && pass "$file step-summary logging present" || fail "$file step-summary logging missing"
+
+            if [ "$merge_count" -gt "$guard_count" ]; then
+              fail "$file has potential unconditional merge path (merge_count=$merge_count guard_count=$guard_count)"
+            else
+              pass "$file has no unconditional merge path"
+            fi
+          }
+
+          check_workflow ".github/workflows/auto-merge.yml"
+          check_workflow ".github/workflows/dependabot-auto-merge.yml"
+
+          echo "" >> "$REPORT_FILE"
+          if [ "$FAIL" -eq 0 ]; then
+            echo "Audit result: PASS" >> "$REPORT_FILE"
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Audit result: FAIL" >> "$REPORT_FILE"
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open/append controls drift issue
+        if: steps.audit.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Controls audit drift detected on main';
+            const {owner, repo} = context.repo;
+            const report = require('fs').readFileSync('controls-audit-report.md', 'utf8');
+
+            const openIssues = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              labels: 'controls-audit',
+              per_page: 100
+            });
+
+            const existing = openIssues.data.find(i => i.title === title);
+
+            const body = [
+              'Automated controls audit detected configuration drift.',
+              '',
+              `Run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              '',
+              '```markdown',
+              report,
+              '```'
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: existing.number,
+                body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                labels: ['controls-audit'],
+                body
+              });
+            }
+
+      - name: Fail loudly on drift
+        if: steps.audit.outputs.drift == 'true'
+        run: |
+          echo "Controls audit drift detected. See workflow summary and controls-audit issue."
+          exit 1

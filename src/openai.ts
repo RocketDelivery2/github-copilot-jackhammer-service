@@ -3,6 +3,7 @@ import OpenAI, { toFile } from 'openai';
 import { z } from 'zod';
 import { config } from './config.js';
 import { ensureNotesSection, stripWrapperText } from './brain.js';
+import { resolveModel } from './modelRouter.js';
 import type { AiTask, CopilotGuidance, CopilotResult, RepoSnapshot, ActiveWorkItem } from './types.js';
 import {
   TASK_CREATION_INSTRUCTIONS,
@@ -10,6 +11,15 @@ import {
   buildGuidanceContext,
   buildTaskCreationPrompt,
 } from './promptContext.js';
+
+const FEEDBACK_LOOP_PROMPT_POLICY = `
+Feedback-loop policy:
+- Active work first: if there is an active unresolved issue/PR, continue that before starting new work.
+- Answer Copilot questions first with direct continuation guidance.
+- Failed checks first: prioritize build/test/lint/check failures before feature expansion.
+- Prefer small, reviewable, validated PRs with explicit acceptance criteria and test plans.
+- Never bypass checks, never include secrets, and avoid unrelated or broad risky rewrites.
+`.trim();
 
 const TaskSchema = z.object({
   title: z.string().min(8).max(120),
@@ -50,8 +60,8 @@ export async function createTasks(
   }
 
   const response = await client.responses.create({
-    model: config.OPENAI_MODEL,
-    instructions: TASK_CREATION_INSTRUCTIONS,
+    model: resolveModel({ call: 'task_creation' }, config),
+    instructions: `${TASK_CREATION_INSTRUCTIONS}\n\n${FEEDBACK_LOOP_PROMPT_POLICY}`,
     input: [{ role: 'user', content }],
     text: {
       format: {
@@ -114,7 +124,7 @@ export async function createContinuationComment(
   });
 
   const response = await client.responses.create({
-    model: config.OPENAI_MODEL,
+    model: resolveModel({ call: 'continuation_comment' }, config),
     instructions: 'You are writing a concise GitHub comment to continue a Copilot coding task. Be direct and actionable.',
     input: [{ role: 'user', content: [{ type: 'input_text', text: inputText }] }],
   });

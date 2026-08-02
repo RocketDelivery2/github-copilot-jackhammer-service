@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 import { classifyExecutionSignals } from './signals.js';
@@ -44,66 +44,43 @@ export async function executeCommandCapture(
   const startedEpochMs = Date.now();
   const startedAt = new Date(startedEpochMs).toISOString();
   const displayCommand = formatCommand(request.command, args);
-
-  return new Promise<CommandExecutionResult>((resolve) => {
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let settled = false;
-
-    const child = spawn(request.command, args, {
-      cwd,
-      env: request.env,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, timeoutMs);
-
-    child.stdout?.on('data', (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr?.on('data', (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
-
-    child.on('error', (error) => {
-      stderr = stderr ? `${stderr}${error.message}` : error.message;
-      complete(null);
-    });
-
-    child.on('close', (code) => {
-      complete(code);
-    });
-
-    function complete(exitCode: number | null): void {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-
-      const completedEpochMs = Date.now();
-      resolve({
-        command: displayCommand,
-        executable: request.command,
-        args,
-        cwd,
-        stdout,
-        stderr,
-        exitCode,
-        startedAt,
-        completedAt: new Date(completedEpochMs).toISOString(),
-        durationMs: Math.max(0, completedEpochMs - startedEpochMs),
-        timedOut,
-        timeoutMs,
-        workItemId: request.workItemId,
-      });
-    }
+  const result = spawnSync(request.command, args, {
+    cwd,
+    env: request.env,
+    shell: false,
+    windowsHide: true,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    maxBuffer: 10 * 1024 * 1024,
   });
+
+  const completedEpochMs = Date.now();
+  const spawnError = result.error as NodeJS.ErrnoException | undefined;
+  const timedOut = spawnError?.code === 'ETIMEDOUT';
+  const stdout = typeof result.stdout === 'string' ? result.stdout : '';
+  const stderrParts = [];
+  if (typeof result.stderr === 'string' && result.stderr.length > 0) {
+    stderrParts.push(result.stderr);
+  }
+  if (spawnError && !timedOut) {
+    stderrParts.push(spawnError.message);
+  }
+
+  return {
+    command: displayCommand,
+    executable: request.command,
+    args,
+    cwd,
+    stdout,
+    stderr: stderrParts.join(stderrParts.length > 1 ? '\n' : ''),
+    exitCode: typeof result.status === 'number' ? result.status : null,
+    startedAt,
+    completedAt: new Date(completedEpochMs).toISOString(),
+    durationMs: Math.max(0, completedEpochMs - startedEpochMs),
+    timedOut,
+    timeoutMs,
+    workItemId: request.workItemId,
+  };
 }
 
 export function commandResultToExecutionEvents(

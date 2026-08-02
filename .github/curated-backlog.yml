@@ -1,0 +1,52 @@
+version: 1
+lane: curated-automation
+purpose: Single-item backlog for the improvement bot.
+
+run_policy:
+  max_selected_items: 1
+  no_op_when:
+    - no candidate satisfies every eligibility predicate
+    - the candidate would touch sensitive paths
+    - the candidate would expand the diff beyond a reviewable slice
+
+priority_buckets:
+  p0_blocker:
+    label: blocker
+    description: Fix broken build, tests, lint, or security regressions first.
+    eligibility_predicates:
+      - build_failure_present
+      - test_failure_present
+      - lint_failure_present
+      - security_fix_available
+  p1_reliability:
+    label: reliability
+    description: Improve validation, rollback safety, or observability with a small diff.
+    eligibility_predicates:
+      - touches_validation_or_error_handling
+      - touches_rollback_or_release_safety
+      - touches_observability_or_operational_safety
+      - diff_is_limited_to_five_files_or_fewer
+      - no_auth_deploy_or_workflow_paths
+  p2_curated_hygiene:
+    label: curated-hygiene
+    description: Keep the backlog manifest and queue rules current when no production-safe work is eligible.
+    eligibility_predicates:
+      - docs_or_config_only
+      - no_runtime_behavior_change
+      - no_sensitive_paths
+
+current_run:
+  item_id: curated-backlog-manifest
+  title: Add curated backlog manifest with priorities and eligibility predicates
+  priority: p2_curated_hygiene
+  status: planned
+  rationale: Bootstrap a machine-readable lane contract so later runs can pick exactly one safe item or no-op cleanly.
+  acceptance_criteria:
+    - The manifest exists at .github/curated-backlog.yml.
+    - Priorities and eligibility predicates are explicit.
+    - The run policy caps the lane to one item per run.
+    - Clean no-op behavior is documented.
+  checklist:
+    - Keep the diff to one new file.
+    - Do not change runtime code or GitHub settings.
+    - Leave production behavior unchanged.
