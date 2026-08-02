@@ -5,6 +5,7 @@ type ScoreContext = {
   signals: readonly QueueSignal[];
   completedIds: ReadonlySet<string>;
   hasActiveFailure: boolean;
+  signalAdjustments?: ReadonlyMap<string, number>;
 };
 
 const FAILURE_SIGNAL_KINDS = new Set<QueueSignalKind>([
@@ -19,38 +20,27 @@ export function rebalanceWorkItems(
   signals: readonly QueueSignal[] = [],
 ): WorkItem[] {
   const allSignals = mergeSignals([signals, classifyExecutionEvents(events)]);
-  const items: WorkItem[] = new Array(workItems.length);
-  const completedIds = new Set<string>();
-  const itemIds = new Set<string>();
-
-  for (let index = 0; index < workItems.length; index++) {
-    const cloned = cloneWorkItem(workItems[index]!);
-    items[index] = cloned;
-    itemIds.add(cloned.id);
-    if (cloned.status === 'completed') completedIds.add(cloned.id);
-  }
+  const items = workItems.map(cloneWorkItem);
+  const itemIds = new Set(items.map(item => item.id));
 
   promoteOrInsertFailureFix(items, itemIds, allSignals);
   insertConversationItems(items, itemIds, allSignals);
 
+  const completedIds = new Set(items.filter(item => item.status === 'completed').map(item => item.id));
+  const { signalAdjustments, hasActiveFailure } = buildSignalAdjustments(allSignals);
   const context: ScoreContext = {
     signals: allSignals,
     completedIds,
-    hasActiveFailure: hasActiveFailure(allSignals),
+    hasActiveFailure,
+    signalAdjustments,
   };
-  const originalOrder = new Map<string, number>();
+  const originalOrder = new Map(items.map((item, index) => [item.id, index]));
 
-  for (let index = 0; index < items.length; index++) {
-    originalOrder.set(items[index]!.id, index);
-  }
-
-  items.sort((a, b) => {
+  return [...items].sort((a, b) => {
     const scoreDiff = scoreWorkItem(b, context) - scoreWorkItem(a, context);
     if (scoreDiff !== 0) return scoreDiff;
     return (originalOrder.get(a.id) ?? 0) - (originalOrder.get(b.id) ?? 0);
   });
-
-  return items;
 }
 
 export function scoreWorkItem(
@@ -60,6 +50,7 @@ export function scoreWorkItem(
   const signals = context.signals ?? [];
   const completedIds = context.completedIds ?? new Set<string>();
   const hasActiveFailure = context.hasActiveFailure ?? signals.some(signal => FAILURE_SIGNAL_KINDS.has(signal.kind));
+  const signalAdjustments = context.signalAdjustments;
 
   let score = 0;
 
@@ -83,21 +74,21 @@ export function scoreWorkItem(
   if (hasActiveFailure && isFeatureOrRefactorWork(item)) score -= 150;
   if (!dependenciesComplete(item, completedIds)) score -= 500;
 
-  for (const signal of signals) {
-    const targetId = signal.targetItemId ?? signal.workItemId;
-    if (signal.kind === 'urgent' && targetId === item.id) score += 1200;
-    if (signal.kind === 'blocker' && targetId === item.id) score -= 2500;
-    if (FAILURE_SIGNAL_KINDS.has(signal.kind) && item.id === failureFixId(signal)) score += 2000;
+  if (signalAdjustments) {
+    score += signalAdjustments.get(item.id) ?? 0;
+  } else {
+    for (const signal of signals) {
+      const targetId = signal.targetItemId ?? signal.workItemId;
+      if (signal.kind === 'urgent' && targetId === item.id) score += 1200;
+      if (signal.kind === 'blocker' && targetId === item.id) score -= 2500;
+      if (FAILURE_SIGNAL_KINDS.has(signal.kind) && item.id === failureFixId(signal)) score += 2000;
+    }
   }
 
   return score;
 }
 
-function promoteOrInsertFailureFix(
-  items: WorkItem[],
-  itemIds: Set<string>,
-  signals: readonly QueueSignal[],
-): void {
+function promoteOrInsertFailureFix(items: WorkItem[], itemIds: Set<string>, signals: readonly QueueSignal[]): void {
   const failure = signals.find(signal => FAILURE_SIGNAL_KINDS.has(signal.kind));
   if (!failure) return;
 
@@ -138,8 +129,8 @@ function insertConversationItems(
     const conversation = createConversationWorkItem(signal);
     if (!conversation) continue;
     if (itemIds.has(conversation.id)) continue;
-    items.push(conversation);
     itemIds.add(conversation.id);
+    items.push(conversation);
   }
 }
 
@@ -167,32 +158,51 @@ function dependenciesComplete(item: WorkItem, completedIds: ReadonlySet<string>)
 }
 
 function cloneWorkItem(item: WorkItem): WorkItem {
-  return { ...item };
+  return {
+    ...item,
+    dependsOn: item.dependsOn ? [...item.dependsOn] : undefined,
+    readPaths: item.readPaths ? [...item.readPaths] : undefined,
+    writePaths: item.writePaths ? [...item.writePaths] : undefined,
+  };
 }
 
 function mergeSignals(signalGroups: readonly (readonly QueueSignal[])[]): QueueSignal[] {
-  const merged: QueueSignal[] = [];
-  const seen = new Set<string>();
+  const merged = new Map<string, QueueSignal>();
 
   for (const signals of signalGroups) {
     for (const signal of signals) {
       const key = signalKey(signal);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push(signal);
+      if (!merged.has(key)) merged.set(key, signal);
     }
   }
 
-  return merged;
+  return [...merged.values()];
+}
+
+function buildSignalAdjustments(signals: readonly QueueSignal[]): {
+  signalAdjustments: ReadonlyMap<string, number>;
+  hasActiveFailure: boolean;
+} {
+  const signalAdjustments = new Map<string, number>();
+  let hasActiveFailure = false;
+
+  for (const signal of signals) {
+    const targetId = signal.targetItemId ?? signal.workItemId;
+    if (signal.kind === 'urgent' && targetId) addSignalAdjustment(signalAdjustments, targetId, 1200);
+    if (signal.kind === 'blocker' && targetId) addSignalAdjustment(signalAdjustments, targetId, -2500);
+    if (FAILURE_SIGNAL_KINDS.has(signal.kind)) {
+      hasActiveFailure = true;
+      addSignalAdjustment(signalAdjustments, failureFixId(signal), 2000);
+    }
+  }
+
+  return { signalAdjustments, hasActiveFailure };
+}
+
+function addSignalAdjustment(adjustments: Map<string, number>, itemId: string, amount: number): void {
+  adjustments.set(itemId, (adjustments.get(itemId) ?? 0) + amount);
 }
 
 function signalKey(signal: QueueSignal): string {
   return `${signal.kind}\u0000${signal.workItemId ?? ''}\u0000${signal.targetItemId ?? ''}`;
-}
-
-function hasActiveFailure(signals: readonly QueueSignal[]): boolean {
-  for (const signal of signals) {
-    if (FAILURE_SIGNAL_KINDS.has(signal.kind)) return true;
-  }
-  return false;
 }
