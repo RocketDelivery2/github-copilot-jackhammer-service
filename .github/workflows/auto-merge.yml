@@ -30,7 +30,6 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
       - name: Create draft PR if none exists
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -193,7 +192,7 @@ jobs:
           echo "arm_note=$ARM_NOTE" >> "$GITHUB_OUTPUT"
           {
             echo "gate_log<<EOF"
-            printf "$GATE_LOG"
+            printf "%b" "$GATE_LOG"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -223,11 +222,11 @@ jobs:
             echo ""
             echo "| Gate | Result | Reason |"
             echo "|------|--------|--------|"
-            printf "$GATE_LOG"
+            printf "%b" "$GATE_LOG"
             echo ""
             echo "Idempotency (approval): ${APPROVAL_NOTE}"
             echo "Idempotency (auto-merge): ${ARM_NOTE}"
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Auto-approve PR
         if: steps.gates.outputs.do_approve == 'true'

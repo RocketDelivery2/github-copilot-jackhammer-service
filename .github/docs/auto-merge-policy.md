@@ -2,10 +2,6 @@
 
 ## Scope
 
-The `auto-merge.yml` workflow only arms squash auto-merge for approved bot-authored PRs.
-Human-authored PRs are always blocked, even if they carry the `auto-merge` label.
-`dependabot-auto-merge.yml` handles Dependabot separately with the same merge-readiness
-checks.
 This repository uses three workflows for low-risk PR automation:
 
 1. `.github/workflows/auto-merge.yml`
@@ -14,17 +10,7 @@ This repository uses three workflows for low-risk PR automation:
 
 The `auto-merge.yml` workflow only arms squash auto-merge for approved bot-authored PRs.
 Human-authored PRs are always blocked, even if they carry the `auto-merge` label.
-`dependabot-auto-merge.yml` handles Dependabot separately with the same merge-readiness
-checks.
-
-| # | Gate | Condition | Block behavior |
-|---|------|-----------|----------------|
-| 1 | Bot author | PR author must be an approved bot | Blocked; human-authored PRs are never auto-merged |
-| 2 | Policy label | Bot PRs must carry the `auto-merge` label | Blocked; add the label only for approved bot PRs |
-| 3 | Draft check | PR must not be in draft state | Blocked until marked ready for review |
-| 4 | Policy labels | PR must NOT have `security`, `breaking-change`, or `do-not-merge` label | Blocked unconditionally; requires human merge |
-| 5 | Review gate | Required review must be approved | Blocked until the review decision is `APPROVED` |
-| 6 | Check gate | Required checks must be clean | Blocked until merge state is `CLEAN` |
+`dependabot-auto-merge.yml` handles Dependabot separately with the same merge-readiness checks.
 
 Automation is deterministic and fail-closed. If any required gate fails, no new approval or auto-merge arming occurs.
 
@@ -48,7 +34,9 @@ All workflows hard-block when any of these labels are present:
 - `do-not-merge`
 - `no-auto-merge`
 
-## `auto-merge.yml` gates (all must pass)
+## Safety gates
+
+### `auto-merge.yml` gates (all must pass)
 
 | Gate | Requirement |
 |---|---|
@@ -65,7 +53,7 @@ If gates pass, the workflow performs idempotent actions:
 - approve only when `github-actions[bot]` has not already approved
 - arm auto-merge only when auto-merge is not already armed
 
-## Dependabot workflows gates (all must pass)
+### Dependabot workflows gates (all must pass)
 
 Both dependabot workflows require:
 
@@ -107,6 +95,7 @@ Every run writes an explicit policy table to `GITHUB_STEP_SUMMARY` including:
 
 - Workflow automation does not bypass branch protection, required checks, required reviews, or repository/org policy.
 - Emergency disable remains available with GitHub Actions workflow disable.
+
 The following bot actors are supported by the policy:
 
 - `dependabot[bot]` (via the dedicated Dependabot workflow)
@@ -116,8 +105,7 @@ Human users are never eligible for auto-merge.
 
 ## Strongly Recommended: Add Branch Protection
 
-This workflow does not substitute for branch protection. Without it, a passing
-workflow can still produce an unreviewed merge. Recommended settings for `main`:
+This workflow does not substitute for branch protection. Without it, a passing workflow can still produce an unreviewed merge. Recommended settings for `main`:
 
 - Require at least 1 approving review
 - Require status checks: `test-and-build`, `CodeQL`

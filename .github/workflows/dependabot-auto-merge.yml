@@ -2,6 +2,7 @@ name: dependabot-auto-merge
 
 on:
   pull_request_target:
+    branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
 
 permissions: {}
@@ -99,7 +100,7 @@ jobs:
           echo "idempotency_note=$IDEMPOTENCY_NOTE" >> "$GITHUB_OUTPUT"
           {
             echo "gate_log<<EOF"
-            printf "$GATE_LOG"
+            printf "%b" "$GATE_LOG"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -127,10 +128,10 @@ jobs:
             echo ""
             echo "| Gate | Result | Reason |"
             echo "|------|--------|--------|"
-            printf "$GATE_LOG"
+            printf "%b" "$GATE_LOG"
             echo ""
             echo "Idempotency: ${IDEMPOTENCY_NOTE}"
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enable auto-merge for dependabot PR
         if: steps.gates.outputs.do_arm == 'true'
