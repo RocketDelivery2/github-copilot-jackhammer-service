@@ -1,0 +1,180 @@
+# Improvement backlog for the automated improvement-pr-bot workflow.
+#
+# Format:
+#   - id: unique kebab-case identifier
+#     priority: integer (lower = higher priority; 1 is highest)
+#     title: short PR title
+#     label: one of: refactor | test | docs | security | performance | tooling
+#     branch_prefix: branch name prefix (will have a run number appended)
+#     description: one-paragraph description of the improvement
+#     tasks:
+#       - list of concrete shell-scriptable or file-edit steps
+#     safe: true if the bot can apply the change automatically; false = open PR with instructions only
+#     enabled: true to include in rotation; false to skip
+#
+# Rules:
+#   - Only entries with safe: true AND enabled: true are applied automatically.
+#   - Entries with safe: false are opened as instruction-only PRs (no code changes).
+#   - The bot selects the lowest-priority number that is enabled and has not been
+#     opened as a PR in the last 30 days (tracked via PR label + branch name prefix).
+#   - Never include secret values, credentials, or tokens in this file.
+
+backlog:
+
+  - id: add-audit-label
+    priority: 1
+    title: "chore: ensure automation labels exist (audit, architecture, quality)"
+    label: tooling
+    branch_prefix: automation/ensure-labels
+    description: >
+      The continuous-audit, architecture-review, and engineering-quality-review workflows
+      create GitHub issues with labels 'automation', 'audit', 'architecture', and 'quality'.
+      This task ensures those labels exist in the repository with appropriate colours.
+    tasks:
+      - "gh label create automation --color '7057ff' --description 'Created by automation workflows' || true"
+      - "gh label create audit --color 'e4e669' --description 'Continuous audit findings' || true"
+      - "gh label create architecture --color 'c2e0c6' --description 'Architecture review findings' || true"
+      - "gh label create quality --color 'fef2c0' --description 'Engineering quality review findings' || true"
+      - "gh label create improvement --color '0075ca' --description 'Automated improvement PR' || true"
+    safe: true
+    enabled: true
+
+  - id: strict-null-checks
+    priority: 2
+    title: "refactor: enable strictNullChecks in tsconfig"
+    label: refactor
+    branch_prefix: automation/strict-null-checks
+    description: >
+      Enabling strictNullChecks in TypeScript surfaces potential null/undefined
+      dereferences at compile time, preventing an entire class of runtime errors.
+      This task adds the flag to tsconfig.json and opens a PR for the team to
+      resolve any resulting type errors.
+    tasks:
+      - "Review tsconfig.json and set strictNullChecks: true under compilerOptions"
+      - "Run npm run lint to see the resulting type errors"
+      - "Fix or suppress (with // @ts-expect-error) any errors blocking the build"
+    safe: false
+    enabled: true
+
+  - id: extract-constants
+    priority: 3
+    title: "refactor: extract magic numbers and repeated string literals to named constants"
+    label: refactor
+    branch_prefix: automation/extract-constants
+    description: >
+      Magic numbers and duplicated string literals scattered across the source make
+      the code harder to read and maintain. This task audits src/ for repeated
+      literals and magic numbers and moves them to a shared constants module.
+    tasks:
+      - "grep -rn --include='*.ts' -E '[^a-zA-Z_][0-9]{2,}[^a-zA-Z_0-9]' src/ | grep -v '.test.'"
+      - "Create src/constants.ts with named exports for each identified constant"
+      - "Replace inline literals with imports from src/constants.ts"
+      - "Run npm test && npm run lint to validate"
+    safe: false
+    enabled: true
+
+  - id: async-io-only
+    priority: 4
+    title: "refactor: replace synchronous fs calls with async equivalents"
+    label: performance
+    branch_prefix: automation/async-io
+    description: >
+      Synchronous file I/O (readFileSync, writeFileSync) blocks the Node.js event
+      loop and degrades throughput. This task replaces them with async/await
+      equivalents from node:fs/promises.
+    tasks:
+      - "grep -rn --include='*.ts' 'readFileSync\\|writeFileSync' src/ | grep -v '.test.'"
+      - "For each occurrence, replace with the async equivalent wrapped in async function"
+      - "Run npm test && npm run lint to validate"
+    safe: false
+    enabled: true
+
+  - id: reduce-any-types
+    priority: 5
+    title: "refactor: replace explicit `any` types with proper TypeScript types"
+    label: refactor
+    branch_prefix: automation/reduce-any-types
+    description: >
+      Explicit `any` types defeat TypeScript's type safety. Each `any` should be
+      replaced with a specific type, unknown (with a type guard), or a union.
+      This task audits and narrows the top occurrences.
+    tasks:
+      - "grep -rn --include='*.ts' ': any\\b\\|as any\\b' src/ | grep -v '.test.'"
+      - "For each occurrence, propose a narrower type or unknown with a type guard"
+      - "Run npm run lint to confirm no new type errors"
+    safe: false
+    enabled: true
+
+  - id: add-missing-tests
+    priority: 6
+    title: "test: add unit tests for untested utility functions"
+    label: test
+    branch_prefix: automation/add-missing-tests
+    description: >
+      Several utility functions in src/ lack unit tests. This task identifies
+      functions with no corresponding test file and adds a minimal test suite
+      using the existing node:test / node:assert/strict pattern.
+    tasks:
+      - "List src/*.ts files that have no matching *.test.ts counterpart"
+      - "For each uncovered file, add src/<name>.test.ts with at minimum one describe/it block"
+      - "Run npm test to confirm new tests pass"
+    safe: false
+    enabled: true
+
+  - id: structured-logging
+    priority: 7
+    title: "refactor: replace console.log with structured logger"
+    label: refactor
+    branch_prefix: automation/structured-logging
+    description: >
+      The codebase uses raw console.log calls throughout. A structured logger
+      (e.g. a thin wrapper that emits JSON lines with timestamp and level) makes
+      log output machine-parseable and production-ready.
+    tasks:
+      - "Create src/logger.ts exporting log(level, message, context?) => void"
+      - "Replace console.log/console.error calls in src/ with logger calls"
+      - "Run npm test && npm run lint to validate"
+    safe: false
+    enabled: true
+
+  - id: update-readme-ci-badge
+    priority: 8
+    title: "docs: add CI status badge to README"
+    label: docs
+    branch_prefix: automation/readme-ci-badge
+    description: >
+      The README does not display a CI status badge. Adding one gives contributors
+      immediate feedback on the build health of the main branch.
+    tasks:
+      - "Add the following badge to the top of README.md after the title:"
+      - "[![CI](https://github.com/RocketDelivery2/github-copilot-jackhammer-service/actions/workflows/test-and-build.yml/badge.svg)](https://github.com/RocketDelivery2/github-copilot-jackhammer-service/actions/workflows/test-and-build.yml)"
+    safe: true
+    enabled: true
+
+  - id: add-editorconfig
+    priority: 9
+    title: "tooling: add .editorconfig for consistent formatting"
+    label: tooling
+    branch_prefix: automation/editorconfig
+    description: >
+      An .editorconfig file ensures editors use consistent indentation, line endings,
+      and charset across contributors without requiring a full linter.
+    tasks:
+      - "Create .editorconfig with: root=true, indent_style=space, indent_size=2, end_of_line=lf, charset=utf-8, trim_trailing_whitespace=true, insert_final_newline=true"
+    safe: true
+    enabled: true
+
+  - id: dependabot-config
+    priority: 10
+    title: "security: verify or add Dependabot configuration"
+    label: security
+    branch_prefix: automation/dependabot-config
+    description: >
+      Keeping dependencies up to date reduces exposure to known CVEs. This task
+      verifies that .github/dependabot.yml exists and covers npm dependencies
+      with a weekly schedule.
+    tasks:
+      - "Check for .github/dependabot.yml"
+      - "If absent, create it with package-ecosystem: npm, directory: /, schedule: weekly"
+    safe: false
+    enabled: true

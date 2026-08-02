@@ -2,17 +2,19 @@ name: dependabot-auto-merge
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   auto-merge:
     name: Enable auto-merge for dependabot PRs
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,6 +26,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          EXPECTED_REPO: RocketDelivery2/github-copilot-jackhammer-service
+          EVENT_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           PR_CONTEXT_JSON=$(gh pr view "$PR_URL" --json author,isDraft,labels,reviewDecision,mergeStateStatus,number,url)
@@ -31,10 +35,72 @@ jobs:
           GATE_PASS=$(echo "$EVALUATION_JSON" | jq -r '.allowed')
           GATE_LOG=$(echo "$EVALUATION_JSON" | jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"')
 
+          append_gate() {
+            GATE_LOG="${GATE_LOG}| $1 | $2 | $3 |\n"
+          }
+
+          PR_JSON="$(gh pr view "$PR_URL" --json state,isDraft,headRefName,author,labels,autoMergeRequest)"
+          PR_STATE="$(echo "$PR_JSON" | jq -r '.state')"
+          PR_DRAFT="$(echo "$PR_JSON" | jq -r '.isDraft')"
+          HEAD_REF="$(echo "$PR_JSON" | jq -r '.headRefName')"
+          PR_AUTHOR="$(echo "$PR_JSON" | jq -r '.author.login')"
+          DENY_COUNT="$(echo "$PR_JSON" | jq '[.labels[]? | .name | select(. == "security" or . == "breaking-change" or . == "do-not-merge" or . == "no-auto-merge")] | length')"
+          AUTO_MERGE_ENABLED="$(echo "$PR_JSON" | jq '.autoMergeRequest != null')"
+
+          if [ "$EVENT_REPO" = "$EXPECTED_REPO" ]; then
+            append_gate "Gate 1: repository match" "PASS" "workflow executing on expected repository"
+          else
+            GATE_PASS=false
+            append_gate "Gate 1: repository match" "BLOCKED" "repository mismatch (${EVENT_REPO})"
+          fi
+
+          if [ "$PR_STATE" = "OPEN" ] && [ "$PR_DRAFT" = "false" ]; then
+            append_gate "Gate 2: open PR check" "PASS" "pull request is open and ready for review"
+          else
+            GATE_PASS=false
+            append_gate "Gate 2: open PR check" "BLOCKED" "pull request is not open-and-ready"
+          fi
+
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            append_gate "Gate 3: actor check" "PASS" "pull request author is dependabot[bot]"
+          else
+            GATE_PASS=false
+            append_gate "Gate 3: actor check" "BLOCKED" "pull request author is ${PR_AUTHOR}"
+          fi
+
+          case "$HEAD_REF" in
+            dependabot/*)
+              append_gate "Gate 4: branch scope" "PASS" "head branch is within dependabot/*"
+              ;;
+            *)
+              GATE_PASS=false
+              append_gate "Gate 4: branch scope" "BLOCKED" "head branch ${HEAD_REF} is outside dependabot/*"
+              ;;
+          esac
+
+          if [ "$DENY_COUNT" -eq 0 ]; then
+            append_gate "Gate 5: deny labels" "PASS" "no deny labels present"
+          else
+            GATE_PASS=false
+            append_gate "Gate 5: deny labels" "BLOCKED" "deny label present (security/breaking-change/do-not-merge/no-auto-merge)"
+          fi
+
+          DO_ARM=false
+          IDEMPOTENCY_NOTE="auto-merge not armed; workflow will arm auto-merge if gates pass"
+          if [ "$AUTO_MERGE_ENABLED" = "true" ]; then
+            IDEMPOTENCY_NOTE="auto-merge already armed; workflow will not duplicate merge arming"
+          fi
+
+          if [ "$GATE_PASS" = "true" ] && [ "$AUTO_MERGE_ENABLED" != "true" ]; then
+            DO_ARM=true
+          fi
+
           echo "gate_pass=$GATE_PASS" >> "$GITHUB_OUTPUT"
+          echo "do_arm=$DO_ARM" >> "$GITHUB_OUTPUT"
+          echo "idempotency_note=$IDEMPOTENCY_NOTE" >> "$GITHUB_OUTPUT"
           {
             echo "gate_log<<EOF"
-            printf "$GATE_LOG"
+            printf "%b" "$GATE_LOG"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -42,26 +108,34 @@ jobs:
         if: always()
         env:
           GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
+          DO_ARM: ${{ steps.gates.outputs.do_arm }}
           GATE_LOG: ${{ steps.gates.outputs.gate_log }}
+          IDEMPOTENCY_NOTE: ${{ steps.gates.outputs.idempotency_note }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           {
             echo "## Dependabot auto-merge policy evaluation -- PR #${PR_NUMBER}"
             echo ""
             if [ "$GATE_PASS" = "true" ]; then
-              echo "Decision: ALLOW -- all gates passed; auto-merge may be armed."
+              if [ "$DO_ARM" = "true" ]; then
+                echo "Decision: ALLOW -- gates passed; auto-merge will be armed."
+              else
+                echo "Decision: NOOP -- gates passed but auto-merge is already armed."
+              fi
             else
-              echo "Decision: BLOCK -- one or more gates failed; auto-merge NOT armed."
+              echo "Decision: BLOCK -- one or more safety gates failed."
             fi
             echo ""
             echo "| Gate | Result | Reason |"
             echo "|------|--------|--------|"
-            printf "$GATE_LOG"
-          } >> $GITHUB_STEP_SUMMARY
+            printf "%b" "$GATE_LOG"
+            echo ""
+            echo "Idempotency: ${IDEMPOTENCY_NOTE}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enable auto-merge for dependabot PR
-        if: steps.gates.outputs.gate_pass == 'true'
+        if: steps.gates.outputs.do_arm == 'true'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --squash "$PR_URL" || echo "Auto-merge already enabled or not applicable; skipping."
+        run: gh pr merge --auto --squash --delete-branch "$PR_URL"

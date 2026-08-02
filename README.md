@@ -38,6 +38,15 @@ OpenAI/ChatGPT reads the latest repo snapshot
 
 ---
 
+## Automation runbooks
+
+- [Scheduled run troubleshooting](./docs/operations/scheduled-run-troubleshooting.md)
+- [Automation governance notes](./docs/operations/automation-governance.md)
+
+These notes cover the expected failure modes for scheduled runs and the operations this repo intentionally keeps manual.
+
+---
+
 ## Quick start
 
 ```bash
@@ -342,6 +351,51 @@ git push -u origin main
 ## Branding
 
 This project is intentionally named **GitHub Copilot JackHammer Service** throughout package metadata, generated issue bodies, labels, queue paths, and systemd service names.
+
+---
+
+## Continuous Improvement Automation
+
+JackHammer ships a suite of scheduled workflows that continuously audit, review, and improve this repository. All workflows are **read-only by default** and are fully policy-compliant — they never bypass required reviews, branch protections, or CI checks.
+
+### Workflows
+
+| Workflow | File | Schedule | Purpose |
+|---|---|---|---|
+| Continuous Audit | `.github/workflows/continuous-audit.yml` | 3× daily (06:00, 14:00, 22:00 UTC) | Runs lint, tests, build, and basic security heuristics; creates a tracking issue when findings exceed the severity threshold |
+| Architecture Review | `.github/workflows/architecture-review.yml` | Daily (03:00 UTC) + PR trigger | Detects Big-O risk patterns, large modules, high nesting, and coupling concerns; posts PR comments and uploads JSON artifact |
+| Engineering Quality Review | `.github/workflows/engineering-quality-review.yml` | Daily (04:00 UTC) + PR trigger | Checks code smells, SOLID alignment, formatting consistency, and TypeScript `any` usage; posts PR comments and uploads JSON artifact |
+| Improvement PR Bot | `.github/workflows/improvement-pr-bot.yml` | Daily (05:00 UTC) + `autofix` label | Selects the highest-priority item from `.github/improvement-backlog.yml` and opens exactly one improvement PR per run |
+| Safe Automerge | `.github/workflows/safe-automerge.yml` | PR events + `workflow_dispatch` | Arms squash automerge **only** for automation-actor PRs that pass all safety gates; never self-approves or bypasses protections |
+
+### Safety constraints
+
+- **No self-approval.** The safe-automerge workflow does not approve PRs. It only arms GitHub's built-in automerge feature, which still requires all branch-protection rules and required-review checks to pass.
+- **No force-merge.** Failing CI or unsatisfied required reviews always block the merge.
+- **No bypassed protections.** All gates are additive. If a blocking label (`security`, `breaking-change`, `do-not-merge`) is present, automerge is not armed regardless of other conditions.
+- **Audit-only.** The continuous-audit, architecture-review, and engineering-quality-review workflows never modify files. They only create issues or PR comments.
+- **Dry-run support.** The improvement-pr-bot workflow accepts a `dry_run` input for safe previewing.
+
+### Disabling or adjusting automation
+
+| Goal | Action |
+|---|---|
+| Disable all scheduled runs | Remove or comment out `schedule:` blocks in the relevant workflow YAML |
+| Raise/lower issue creation threshold | Edit the `THRESHOLD` variable in `continuous-audit.yml` |
+| Skip a backlog item | Set `enabled: false` in `.github/improvement-backlog.yml` |
+| Add a new improvement task | Add an entry to `.github/improvement-backlog.yml` following the schema at the top of that file |
+| Disable PR bot entirely | Set `enabled: false` for all entries or remove the `improvement-pr-bot.yml` workflow |
+
+### Backlog
+
+The improvement PR bot reads from [`.github/improvement-backlog.yml`](./.github/improvement-backlog.yml). Each entry specifies:
+
+- `priority` — integer (lower = higher priority)
+- `safe` — `true` if the bot can apply the change automatically; `false` = instruction-only PR
+- `enabled` — `true` to include in rotation
+- `tasks` — concrete steps for the PR checklist
+
+See the file for the full schema and sample entries.
 
 ---
 
