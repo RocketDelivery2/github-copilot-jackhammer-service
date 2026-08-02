@@ -131,6 +131,32 @@ describe('orchestration rebalance', () => {
     assert.equal(rebalanced[0]?.id, 'conversation:agent_question:feature');
     assert.equal(rebalanced[0]?.kind, 'conversation');
   });
+
+  it('keeps the input queue detached from the rebalanced result', () => {
+    const queue = [
+      item({
+        id: 'feature',
+        title: 'Continue feature',
+        kind: 'feature',
+        readPaths: ['src/feature.ts'],
+        writePaths: ['src/feature.ts'],
+        dependsOn: ['base'],
+      }),
+      item({ id: 'base', title: 'Base task', status: 'completed' }),
+    ];
+
+    const rebalanced = rebalanceWorkItems(queue);
+
+    if (rebalanced[0]) {
+      rebalanced[0].title = 'Updated feature';
+    }
+
+    assert.notEqual(rebalanced[0], queue[0]);
+    assert.equal(queue[0]?.title, 'Continue feature');
+    assert.deepEqual(queue[0]?.readPaths, ['src/feature.ts']);
+    assert.deepEqual(queue[0]?.writePaths, ['src/feature.ts']);
+    assert.deepEqual(queue[0]?.dependsOn, ['base']);
+  });
 });
 
 describe('orchestration parallelism', () => {
