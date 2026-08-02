@@ -604,11 +604,7 @@ function createGeminiMockClient(
   }> = {},
 ): {
   models: {
-<<<<<<< HEAD
-    generateContent(params: { model: string; contents: string; config?: { maxOutputTokens?: number } }): Promise<{
-=======
     generateContent(params: { model: string; contents: string; config?: { maxOutputTokens?: number; abortSignal?: AbortSignal } }): Promise<{
->>>>>>> baf11d1 (Fix Gemini timeout abort propagation)
       text?: string;
       responseId?: string;
       usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
