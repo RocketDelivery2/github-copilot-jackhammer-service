@@ -264,6 +264,51 @@ test('timeout failures normalize without leaking secrets', async () => {
   assert.equal(result.requestId, null);
 });
 
+test('timed out Gemini invocations abort the underlying request signal', async () => {
+  const { GeminiProvider } = await import('./gemini-provider.js');
+  let observedAbortSignal: AbortSignal | undefined;
+  let abortObserved = false;
+
+  const provider = new GeminiProvider({
+    apiKey: 'test-gemini-key',
+    createClient: () => ({
+      models: {
+        generateContent: async (_params): Promise<{ text?: string; responseId?: string; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } }> => {
+          observedAbortSignal = _params.config?.abortSignal;
+
+          if (!observedAbortSignal) {
+            throw new Error('abortSignal was not provided');
+          }
+
+          return await new Promise<{ text?: string; responseId?: string; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } }>((_, reject) => {
+            observedAbortSignal?.addEventListener(
+              'abort',
+              () => {
+                abortObserved = true;
+                reject(new Error('gemini request aborted'));
+              },
+              { once: true },
+            );
+          });
+        },
+      },
+    }),
+  });
+
+  const result = await provider.invoke({
+    prompt: 'Please time out.',
+    model: 'gemini-3.5-flash-lite',
+    maxOutputTokens: 16,
+    timeoutMs: 25,
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.errorCode, 'timeout');
+  assert.equal(observedAbortSignal instanceof AbortSignal, true);
+  assert.equal(observedAbortSignal?.aborted, true);
+  assert.equal(abortObserved, true);
+});
+
 test('Gemini prefers GEMINI_API_KEY and falls back to GOOGLE_API_KEY', async () => {
   const { GeminiProvider } = await import('./gemini-provider.js');
   const observedKeys: string[] = [];
@@ -559,7 +604,11 @@ function createGeminiMockClient(
   }> = {},
 ): {
   models: {
+<<<<<<< HEAD
     generateContent(params: { model: string; contents: string; config?: { maxOutputTokens?: number } }): Promise<{
+=======
+    generateContent(params: { model: string; contents: string; config?: { maxOutputTokens?: number; abortSignal?: AbortSignal } }): Promise<{
+>>>>>>> baf11d1 (Fix Gemini timeout abort propagation)
       text?: string;
       responseId?: string;
       usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };

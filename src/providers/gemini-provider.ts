@@ -31,6 +31,7 @@ type GeminiClientLike = {
       contents: string;
       config?: {
         maxOutputTokens?: number;
+        abortSignal?: AbortSignal;
       };
     }): Promise<GeminiResponseLike>;
   };
@@ -66,12 +67,13 @@ export class GeminiProvider implements ProviderAdapter {
 
       const client = this.resolveClient(apiKey, request.timeoutMs);
 
-      return await withTimeout(request.timeoutMs, async () => {
+      return await withTimeout(request.timeoutMs, async (signal) => {
         const response = await client.models.generateContent({
           model: request.model.trim(),
           contents: request.prompt,
           config: {
             maxOutputTokens: request.maxOutputTokens,
+            abortSignal: signal,
           },
         });
 
