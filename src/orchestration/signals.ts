@@ -161,10 +161,16 @@ export function classifyExecutionEvent(event: ExecutionEvent): QueueSignal[] {
 }
 
 export function classifyExecutionEvents(events: readonly ExecutionEvent[]): QueueSignal[] {
+  // Use a composite-key Set to deduplicate across events in O(n) instead of O(n²).
+  const seen = new Set<string>();
   const signals: QueueSignal[] = [];
   for (const event of events) {
     for (const signal of classifyExecutionEvent(event)) {
-      pushUniqueSignal(signals, signal);
+      const key = `${signal.kind}\0${signal.workItemId ?? ''}\0${signal.targetItemId ?? ''}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        signals.push(signal);
+      }
     }
   }
   return signals;

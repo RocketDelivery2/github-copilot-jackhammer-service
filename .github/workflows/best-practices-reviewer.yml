@@ -1,0 +1,80 @@
+name: best-practices-reviewer
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_issue:
+        description: Create an issue from the generated issue-body artifact
+        type: boolean
+        required: false
+        default: false
+      comment_on_pr:
+        description: Comment on a specific PR using generated PR comment artifact
+        type: boolean
+        required: false
+        default: false
+      pr_number:
+        description: Pull request number for comment_on_pr
+        type: string
+        required: false
+      max_files:
+        description: Max files to scan
+        type: number
+        required: false
+        default: 400
+  schedule:
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: best-practices-reviewer-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  reviewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run best-practices reviewer lane
+        run: npm run reviewer:best-practices -- --max-files "${{ inputs.max_files || 400 }}"
+
+      - name: Upload reviewer artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: best-practices-review
+          path: .ai/best-practices-review/*
+          if-no-files-found: error
+
+      - name: Create issue from reviewer output
+        if: ${{ (inputs.create_issue == true) && (inputs.comment_on_pr != true) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh issue create
+          --title "[Best Practices] Follow-up tasks $(date -u +%Y-%m-%d)"
+          --body-file .ai/best-practices-review/issue-body.md
+
+      - name: Comment on pull request from reviewer output
+        if: ${{ (inputs.comment_on_pr == true) && (inputs.pr_number != '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh pr comment "${{ inputs.pr_number }}"
+          --body-file .ai/best-practices-review/pr-comment.md
