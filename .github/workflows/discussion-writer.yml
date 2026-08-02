@@ -62,6 +62,7 @@ jobs:
       DISCUSSIONS_MIN_MATERIAL_CHANGES: ${{ vars.DISCUSSIONS_MIN_MATERIAL_CHANGES || '1' }}
       DISCUSSIONS_STATE_FILE: .ai/discussions-state.json
       DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
+      RUN_MANIFEST_PATH: .ai/run-manifest.json
       INPUT_DISCUSSION_TYPE: ${{ inputs.discussion_type || '' }}
       INPUT_CATEGORY: ${{ inputs.category || '' }}
       INPUT_AUTO_PUBLISH: ${{ inputs.auto_publish || '' }}
@@ -82,14 +83,93 @@ jobs:
 
       - name: Generate or publish discussion
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'unused-for-discussion-writer' }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node --import tsx src/discussion-writer-cli.ts
+          WORKFLOW_NAME: ${{ github.workflow }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_MANIFEST_PATH: ${{ env.RUN_MANIFEST_PATH }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ai
+
+          OUTPUT=""
+          STATUS=0
+          set +e
+          OUTPUT=$(GITHUB_STEP_SUMMARY= node --import tsx src/discussion-writer-cli.ts 2>&1)
+          STATUS=$?
+          set -e
+
+          printf '%s\n' "$OUTPUT"
+
+          MESSAGE=$(printf '%s\n' "$OUTPUT" | tail -n 1)
+          DECISION="unknown"
+          DECISION_LABEL="UNKNOWN"
+          DECISION_REASON="$MESSAGE"
+
+          if [ "$STATUS" -ne 0 ]; then
+            DECISION="failed"
+            DECISION_LABEL="FAILED"
+            DECISION_REASON="$MESSAGE"
+          elif printf '%s\n' "$OUTPUT" | grep -q 'Discussion published:'; then
+            DECISION="published"
+            DECISION_LABEL="PUBLISHED"
+            DECISION_REASON="$MESSAGE"
+          elif printf '%s\n' "$OUTPUT" | grep -q 'Discussion preview generated\.'; then
+            DECISION="preview"
+            DECISION_LABEL="PREVIEW"
+            DECISION_REASON="$MESSAGE"
+          elif printf '%s\n' "$OUTPUT" | grep -q '^No discussion published:'; then
+            DECISION="skipped"
+            DECISION_LABEL="SKIPPED"
+            DECISION_REASON="$MESSAGE"
+          elif printf '%s\n' "$OUTPUT" | grep -q 'Discussion generation is disabled by configuration\.'; then
+            DECISION="disabled"
+            DECISION_LABEL="DISABLED"
+            DECISION_REASON="$MESSAGE"
+          fi
+
+          jq -n \
+            --arg workflow "$WORKFLOW_NAME" \
+            --arg run_id "$RUN_ID" \
+            --arg run_attempt "$RUN_ATTEMPT" \
+            --arg commit "$COMMIT_SHA" \
+            --arg decision "$DECISION" \
+            --arg decision_reason "$DECISION_REASON" \
+            --arg preview_path ".ai/discussion-preview.md" \
+            '{
+              workflow: $workflow,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              commit: $commit,
+              decision: $decision,
+              decision_reason: $decision_reason,
+              preview_path: $preview_path
+            }' > "$RUN_MANIFEST_PATH"
+
+          {
+            echo "## Discussion writer run"
+            echo ""
+            echo "| Field | Value |"
+            echo "|------|-------|"
+            echo "| Workflow | ${WORKFLOW_NAME} |"
+            echo "| Run ID | ${RUN_ID} |"
+            echo "| Attempt | ${RUN_ATTEMPT} |"
+            echo "| Commit | ${COMMIT_SHA} |"
+            echo "| Decision | ${DECISION_LABEL} |"
+            echo "| Message | ${MESSAGE} |"
+            echo "| Manifest | ${RUN_MANIFEST_PATH} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$STATUS" -ne 0 ]; then
+            exit "$STATUS"
+          fi
 
       - name: Upload discussion preview artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: discussion-preview
-          path: .ai/discussion-preview.md
+          path: |
+            .ai/discussion-preview.md
+            .ai/run-manifest.json
           if-no-files-found: ignore
