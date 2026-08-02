@@ -45,6 +45,10 @@ export type StandardsOptions = {
   maxReviewableFiles?: number;
 };
 
+const taskSearchTextCache = new WeakMap<AiTask, string>();
+const snapshotSearchTextCache = new WeakMap<RepoSnapshot, string>();
+const snapshotInstabilityCache = new WeakMap<RepoSnapshot, boolean>();
+
 const DIMENSION_WEIGHTS: Record<StandardsDimension, number> = {
   correctness: 9,
   build_stability: 14,
@@ -157,7 +161,12 @@ function countMatches(text: string, terms: readonly string[]): number {
 }
 
 function toSearchText(task: AiTask): string {
-  return [
+  const cached = taskSearchTextCache.get(task);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const text = [
     task.title,
     task.summary,
     task.copilot_prompt,
@@ -168,12 +177,30 @@ function toSearchText(task: AiTask): string {
   ]
     .join('\n')
     .toLowerCase();
+
+  taskSearchTextCache.set(task, text);
+  return text;
+}
+
+function toSnapshotSearchText(snapshot: RepoSnapshot): string {
+  const cached = snapshotSearchTextCache.get(snapshot);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const text = `${snapshot.recentChanges}\n${snapshot.packageHints.join('\n')}`.toLowerCase();
+  snapshotSearchTextCache.set(snapshot, text);
+  return text;
 }
 
 function detectUnstableBackend(snapshot: RepoSnapshot | undefined): boolean {
   if (!snapshot) return false;
-  const text = `${snapshot.recentChanges}\n${snapshot.packageHints.join('\n')}`.toLowerCase();
-  return includesAny(text, [
+  const cached = snapshotInstabilityCache.get(snapshot);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const unstable = includesAny(toSnapshotSearchText(snapshot), [
     ...BLOCKER_KEYWORDS,
     'hotfix',
     'regression',
@@ -182,6 +209,9 @@ function detectUnstableBackend(snapshot: RepoSnapshot | undefined): boolean {
     'api outage',
     'production error'
   ]);
+
+  snapshotInstabilityCache.set(snapshot, unstable);
+  return unstable;
 }
 
 function inferPriority(score: number): AiTask['priority'] {
