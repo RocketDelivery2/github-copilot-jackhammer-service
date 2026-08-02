@@ -1,0 +1,313 @@
+name: architecture-review
+
+on:
+  schedule:
+    # Runs daily at 03:00 UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      create_issue:
+        description: 'Create tracking issue for high-severity findings'
+        required: false
+        default: 'false'
+        type: boolean
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  architecture-review:
+    name: Architecture & performance review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Analyse file sizes and module complexity
+        id: complexity
+        run: |
+          set +e
+          LARGE_FILES=""
+          HIGH_COMPLEXITY_FILES=""
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Flag TypeScript source files over 400 lines (heuristic for large modules)
+          while IFS= read -r file; do
+            LINES=$(wc -l < "$file")
+            if [ "$LINES" -gt 400 ]; then
+              LARGE_FILES="${LARGE_FILES}\n- \`$file\` — $LINES lines"
+            fi
+          done < <(find src -name "*.ts" ! -name "*.test.ts" 2>/dev/null)
+
+          # Detect high-nesting depth (heuristic: lines with 4+ levels of indentation in non-test files)
+          while IFS= read -r file; do
+            DEEP=$(grep -cE '^(\s{16}|\t{4})' "$file" 2>/dev/null || echo "0")
+            if [ "$DEEP" -gt "10" ]; then
+              HIGH_COMPLEXITY_FILES="${HIGH_COMPLEXITY_FILES}\n- \`$file\` — $DEEP deeply-nested lines"
+            fi
+          done < <(find src -name "*.ts" ! -name "*.test.ts" 2>/dev/null)
+
+          echo "large_files<<EOF" >> $GITHUB_OUTPUT
+          printf "${LARGE_FILES:-none}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "complex_files<<EOF" >> $GITHUB_OUTPUT
+          printf "${HIGH_COMPLEXITY_FILES:-none}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+          set -e
+
+      - name: Detect potential Big-O risk patterns
+        id: bigo
+        run: |
+          set +e
+          BIGO_RISKS=""
+
+          # Candidate nested loops (heuristic: two iteration patterns within 3 lines of each other).
+          # This detects potential O(n²) candidates but may include sequential loops.
+          # Results are flagged for human review, not treated as definitive bugs.
+          NESTED_LOOPS=$(grep -rn --include="*.ts" -A3 -E '(for|forEach|map|filter|reduce)\s*\(' src/ 2>/dev/null | \
+            grep -B3 -E '(for|forEach|map|filter|reduce)\s*\(' | \
+            grep -v "^--$" | grep "\.ts:" | awk -F: '{print $1":"$2}' | sort -u | head -20 || echo "")
+
+          if [ -n "$NESTED_LOOPS" ]; then
+            while IFS= read -r loc; do
+              BIGO_RISKS="${BIGO_RISKS}\n- Iteration patterns within 3 lines (review for nesting) at \`$loc\`"
+            done <<< "$NESTED_LOOPS"
+          fi
+
+          # Array .find() inside a loop (O(n²) risk)
+          FIND_IN_LOOP=$(grep -rn --include="*.ts" -E '\.(find|findIndex|includes)\(' src/ 2>/dev/null | \
+            grep -v "\.test\." | head -10 || echo "")
+
+          FIND_COUNT=$(echo "$FIND_IN_LOOP" | grep -c "\.ts:" 2>/dev/null || echo "0")
+          if [ "$FIND_COUNT" -gt "5" ]; then
+            BIGO_RISKS="${BIGO_RISKS}\n- High use of linear-scan array methods (.find/.findIndex/.includes) — consider Map/Set for O(1) lookups ($FIND_COUNT occurrences)"
+          fi
+
+          # Synchronous file reads in loops (I/O risk)
+          SYNC_IO=$(grep -rn --include="*.ts" -E 'readFileSync|writeFileSync' src/ 2>/dev/null | \
+            grep -v "\.test\." | head -10 || echo "")
+          if [ -n "$SYNC_IO" ]; then
+            BIGO_RISKS="${BIGO_RISKS}\n- Synchronous I/O detected (readFileSync/writeFileSync) — prefer async alternatives"
+          fi
+
+          echo "bigo_risks<<EOF" >> $GITHUB_OUTPUT
+          printf "${BIGO_RISKS:-none}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Severity: count number of risk lines
+          RISK_COUNT=$(printf "$BIGO_RISKS" | grep -c "^-" 2>/dev/null || echo "0")
+          echo "risk_count=$RISK_COUNT" >> $GITHUB_OUTPUT
+          set -e
+
+      - name: Detect coupling and boundary violations
+        id: coupling
+        run: |
+          set +e
+          COUPLING_ISSUES=""
+
+          # Check for direct process.exit in non-entry files
+          EXIT_CALLS=$(grep -rn --include="*.ts" 'process\.exit' src/ 2>/dev/null | \
+            grep -v "src/index\.ts" | grep -v "\.test\." | head -10 || echo "")
+          if [ -n "$EXIT_CALLS" ]; then
+            COUPLING_ISSUES="${COUPLING_ISSUES}\n- \`process.exit()\` called outside entry point (src/index.ts):"
+            while IFS= read -r line; do
+              COUPLING_ISSUES="${COUPLING_ISSUES}\n  - $line"
+            done <<< "$EXIT_CALLS"
+          fi
+
+          # Check for circular-ish import patterns (heuristic: same file imported from multiple modules)
+          SHARED_IMPORTS=$(grep -rh --include="*.ts" -E "^import .* from '\.\." src/ 2>/dev/null | \
+            sed "s/.*from '//;s/'.*//" | sort | uniq -c | sort -rn | head -5 || echo "")
+          if echo "$SHARED_IMPORTS" | grep -qE '^\s+[5-9][0-9]* '; then
+            COUPLING_ISSUES="${COUPLING_ISSUES}\n- Highly imported internal modules detected (potential tight coupling)"
+          fi
+
+          echo "coupling_issues<<EOF" >> $GITHUB_OUTPUT
+          printf "${COUPLING_ISSUES:-none}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          set -e
+
+      - name: Produce architecture report
+        id: report
+        env:
+          LARGE_FILES: ${{ steps.complexity.outputs.large_files }}
+          COMPLEX_FILES: ${{ steps.complexity.outputs.complex_files }}
+          BIGO_RISKS: ${{ steps.bigo.outputs.bigo_risks }}
+          RISK_COUNT: ${{ steps.bigo.outputs.risk_count }}
+          COUPLING: ${{ steps.coupling.outputs.coupling_issues }}
+          TIMESTAMP: ${{ steps.complexity.outputs.timestamp }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SEVERITY=0
+
+          if [ "${RISK_COUNT:-0}" -gt "3" ]; then SEVERITY=$((SEVERITY + 3)); fi
+          if echo "$LARGE_FILES" | grep -q "^\-"; then SEVERITY=$((SEVERITY + 2)); fi
+          if echo "$COMPLEX_FILES" | grep -q "^\-"; then SEVERITY=$((SEVERITY + 2)); fi
+          if echo "$COUPLING" | grep -q "^\-"; then SEVERITY=$((SEVERITY + 2)); fi
+
+          {
+            echo "## Architecture Review Report — $TIMESTAMP"
+            echo ""
+            echo "**Severity score:** $SEVERITY / 9"
+            echo ""
+            echo "### Large source files (>400 lines)"
+            printf "$LARGE_FILES"
+            echo ""
+            echo ""
+            echo "### High nesting depth"
+            printf "$COMPLEX_FILES"
+            echo ""
+            echo ""
+            echo "### Big-O risk candidates"
+            printf "$BIGO_RISKS"
+            echo ""
+            echo ""
+            echo "### Coupling concerns"
+            printf "$COUPLING"
+            echo ""
+            echo ""
+            echo "**Run:** $RUN_URL"
+          } >> $GITHUB_STEP_SUMMARY
+
+          echo "severity=$SEVERITY" >> $GITHUB_OUTPUT
+
+      - name: Write machine-readable JSON report
+        env:
+          LARGE_FILES: ${{ steps.complexity.outputs.large_files }}
+          COMPLEX_FILES: ${{ steps.complexity.outputs.complex_files }}
+          BIGO_RISKS: ${{ steps.bigo.outputs.bigo_risks }}
+          RISK_COUNT: ${{ steps.bigo.outputs.risk_count }}
+          COUPLING: ${{ steps.coupling.outputs.coupling_issues }}
+          SEVERITY: ${{ steps.report.outputs.severity }}
+          TIMESTAMP: ${{ steps.complexity.outputs.timestamp }}
+        run: |
+          cat > /tmp/architecture-report.json <<EOF
+          {
+            "timestamp": "$TIMESTAMP",
+            "severity": $SEVERITY,
+            "risk_count": ${RISK_COUNT:-0},
+            "large_files": $(printf '%s' "$LARGE_FILES" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))"),
+            "bigo_risks": $(printf '%s' "$BIGO_RISKS" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))"),
+            "coupling_issues": $(printf '%s' "$COUPLING" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))")
+          }
+          EOF
+
+      - name: Upload architecture report artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: architecture-report-${{ github.run_number }}
+          retention-days: 30
+          path: /tmp/architecture-report.json
+
+      - name: Post PR comment with architecture findings
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LARGE_FILES: ${{ steps.complexity.outputs.large_files }}
+          BIGO_RISKS: ${{ steps.bigo.outputs.bigo_risks }}
+          RISK_COUNT: ${{ steps.bigo.outputs.risk_count }}
+          SEVERITY: ${{ steps.report.outputs.severity }}
+          TIMESTAMP: ${{ steps.complexity.outputs.timestamp }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "${SEVERITY:-0}" -lt "2" ]; then
+            echo "Severity below PR comment threshold; skipping comment."
+            exit 0
+          fi
+
+          COMMENT_FILE=$(mktemp)
+          {
+            echo "## Architecture Review — $TIMESTAMP"
+            echo ""
+            echo "**Severity:** $SEVERITY / 9"
+            echo ""
+            echo "### Big-O risk candidates"
+            printf '%s\n' "$BIGO_RISKS"
+            echo ""
+            echo "### Large files"
+            printf '%s\n' "$LARGE_FILES"
+            echo ""
+            echo "[Full report]($RUN_URL)"
+            echo ""
+            echo "---"
+            echo "*Posted by architecture-review workflow. Automated read-only analysis.*"
+          } > "$COMMENT_FILE"
+          gh pr comment "$PR_NUMBER" --body-file "$COMMENT_FILE"
+          rm -f "$COMMENT_FILE"
+
+      - name: Create issue for high-severity findings
+        if: |
+          steps.report.outputs.severity != '0' &&
+          (github.event_name == 'schedule' ||
+           (github.event_name == 'workflow_dispatch' && github.event.inputs.create_issue == 'true'))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEVERITY: ${{ steps.report.outputs.severity }}
+          LARGE_FILES: ${{ steps.complexity.outputs.large_files }}
+          BIGO_RISKS: ${{ steps.bigo.outputs.bigo_risks }}
+          COUPLING: ${{ steps.coupling.outputs.coupling_issues }}
+          TIMESTAMP: ${{ steps.complexity.outputs.timestamp }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          HIGH_THRESHOLD=5
+          if [ "${SEVERITY:-0}" -lt "$HIGH_THRESHOLD" ]; then
+            echo "Severity $SEVERITY is below high threshold $HIGH_THRESHOLD; skipping issue."
+            exit 0
+          fi
+
+          ISSUE_FILE=$(mktemp)
+          {
+            echo "## Architecture Review: High-Severity Findings"
+            echo ""
+            echo "**Timestamp:** $TIMESTAMP"
+            echo "**Severity:** $SEVERITY / 9"
+            echo ""
+            echo "### Big-O risk candidates"
+            printf '%s\n' "$BIGO_RISKS"
+            echo ""
+            echo "### Large source files"
+            printf '%s\n' "$LARGE_FILES"
+            echo ""
+            echo "### Coupling concerns"
+            printf '%s\n' "$COUPLING"
+            echo ""
+            echo "**Workflow run:** $RUN_URL"
+            echo ""
+            echo "---"
+            echo "*Auto-created by architecture-review workflow.*"
+          } > "$ISSUE_FILE"
+
+          gh issue create \
+            --title "[Architecture] High-severity findings — $TIMESTAMP" \
+            --body-file "$ISSUE_FILE" \
+            --label "automation" \
+            --label "architecture" \
+            2>/dev/null || \
+          gh issue create \
+            --title "[Architecture] High-severity findings — $TIMESTAMP" \
+            --body "High-severity architecture findings detected. See workflow run: $RUN_URL"
+          rm -f "$ISSUE_FILE"

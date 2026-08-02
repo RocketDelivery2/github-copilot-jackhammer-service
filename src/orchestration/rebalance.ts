@@ -19,12 +19,12 @@ export function rebalanceWorkItems(
   events: readonly ExecutionEvent[] = [],
   signals: readonly QueueSignal[] = [],
 ): WorkItem[] {
-  const allSignals = mergeSignals([...signals, ...classifyExecutionEvents(events)]);
+  const allSignals = mergeSignals([signals, classifyExecutionEvents(events)]);
   const items = workItems.map(cloneWorkItem);
-
-  promoteOrInsertFailureFix(items, allSignals);
   const itemIds = new Set(items.map(item => item.id));
-  insertConversationItems(items, allSignals, itemIds);
+
+  promoteOrInsertFailureFix(items, itemIds, allSignals);
+  insertConversationItems(items, itemIds, allSignals);
 
   const completedIds = new Set(items.filter(item => item.status === 'completed').map(item => item.id));
   const { signalAdjustments, hasActiveFailure } = buildSignalAdjustments(allSignals);
@@ -35,10 +35,9 @@ export function rebalanceWorkItems(
     signalAdjustments,
   };
   const originalOrder = new Map(items.map((item, index) => [item.id, index]));
-  const scores = new Map(items.map(item => [item.id, scoreWorkItem(item, context)]));
 
   return [...items].sort((a, b) => {
-    const scoreDiff = (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0);
+    const scoreDiff = scoreWorkItem(b, context) - scoreWorkItem(a, context);
     if (scoreDiff !== 0) return scoreDiff;
     return (originalOrder.get(a.id) ?? 0) - (originalOrder.get(b.id) ?? 0);
   });
@@ -89,7 +88,7 @@ export function scoreWorkItem(
   return score;
 }
 
-function promoteOrInsertFailureFix(items: WorkItem[], signals: readonly QueueSignal[]): void {
+function promoteOrInsertFailureFix(items: WorkItem[], itemIds: Set<string>, signals: readonly QueueSignal[]): void {
   const failure = signals.find(signal => FAILURE_SIGNAL_KINDS.has(signal.kind));
   if (!failure) return;
 
@@ -118,12 +117,13 @@ function promoteOrInsertFailureFix(items: WorkItem[], signals: readonly QueueSig
     description: failure.message,
     writePaths: [],
   });
+  itemIds.add(fixId);
 }
 
 function insertConversationItems(
   items: WorkItem[],
-  signals: readonly QueueSignal[],
   itemIds: Set<string>,
+  signals: readonly QueueSignal[],
 ): void {
   for (const signal of signals) {
     const conversation = createConversationWorkItem(signal);
@@ -166,12 +166,14 @@ function cloneWorkItem(item: WorkItem): WorkItem {
   };
 }
 
-function mergeSignals(signals: QueueSignal[]): QueueSignal[] {
+function mergeSignals(signalGroups: readonly (readonly QueueSignal[])[]): QueueSignal[] {
   const merged = new Map<string, QueueSignal>();
 
-  for (const signal of signals) {
-    const key = signalKey(signal);
-    if (!merged.has(key)) merged.set(key, signal);
+  for (const signals of signalGroups) {
+    for (const signal of signals) {
+      const key = signalKey(signal);
+      if (!merged.has(key)) merged.set(key, signal);
+    }
   }
 
   return [...merged.values()];
@@ -202,9 +204,5 @@ function addSignalAdjustment(adjustments: Map<string, number>, itemId: string, a
 }
 
 function signalKey(signal: QueueSignal): string {
-  return [
-    signal.kind,
-    signal.workItemId ?? '',
-    signal.targetItemId ?? '',
-  ].join('\u0000');
+  return `${signal.kind}\u0000${signal.workItemId ?? ''}\u0000${signal.targetItemId ?? ''}`;
 }
