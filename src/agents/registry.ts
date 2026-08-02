@@ -2,6 +2,8 @@ import type { AgentCapability, AgentCard } from './types.js';
 
 export type AgentRegistry = {
   agents: readonly AgentCard[];
+  /** O(1) lookup index — always populated by createDefaultAgentRegistry. */
+  readonly byId: ReadonlyMap<string, AgentCard>;
 };
 
 export type WorkItemLike = {
@@ -11,11 +13,14 @@ export type WorkItemLike = {
 };
 
 export function createDefaultAgentRegistry(): AgentRegistry {
-  return { agents: DEFAULT_AGENTS };
+  return {
+    agents: DEFAULT_AGENTS,
+    byId: new Map(DEFAULT_AGENTS.map(a => [a.id, a])),
+  };
 }
 
 export function getAgentById(registry: AgentRegistry, id: string): AgentCard | undefined {
-  return registry.agents.find(a => a.id === id);
+  return registry.byId.get(id);
 }
 
 export function findAgentsByCapability(
@@ -34,10 +39,13 @@ export function selectAgentsForWorkItem(
     .toLowerCase();
 
   const selected: AgentCard[] = [];
+  const selectedIds = new Set<string>();
 
   const add = (id: string): void => {
+    if (selectedIds.has(id)) return;  // O(1) dedup instead of selected.some()
     const agent = getAgentById(registry, id);
-    if (agent && !selected.some(a => a.id === id)) {
+    if (agent) {
+      selectedIds.add(id);
       selected.push(agent);
     }
   };

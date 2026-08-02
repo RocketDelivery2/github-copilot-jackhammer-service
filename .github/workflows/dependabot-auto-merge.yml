@@ -4,15 +4,22 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   auto-merge:
     name: Enable auto-merge for dependabot PRs
     runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
       - name: Evaluate policy gates
         id: gates
         env:
@@ -22,8 +29,10 @@ jobs:
           EVENT_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          GATE_PASS=true
-          GATE_LOG=""
+          PR_CONTEXT_JSON=$(gh pr view "$PR_URL" --json author,isDraft,labels,reviewDecision,mergeStateStatus,number,url)
+          EVALUATION_JSON=$(AUTO_MERGE_PR_CONTEXT_JSON="$PR_CONTEXT_JSON" AUTO_MERGE_REQUIRE_POLICY_LABEL=false AUTO_MERGE_APPROVED_BOT_AUTHORS='dependabot[bot]' node --import tsx src/auto-merge-policy-cli.ts)
+          GATE_PASS=$(echo "$EVALUATION_JSON" | jq -r '.allowed')
+          GATE_LOG=$(echo "$EVALUATION_JSON" | jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"')
 
           append_gate() {
             GATE_LOG="${GATE_LOG}| $1 | $2 | $3 |\n"

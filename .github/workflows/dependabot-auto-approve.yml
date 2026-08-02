@@ -4,13 +4,15 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
 
-permissions:
-  pull-requests: write
+permissions: {}
 
 jobs:
   auto-approve:
     name: Auto-approve dependabot PRs
     runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    permissions:
+      pull-requests: write
     steps:
       - name: Evaluate dependabot approval gates
         id: gates
