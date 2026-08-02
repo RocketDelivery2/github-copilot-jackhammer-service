@@ -4,14 +4,15 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
 
-permissions:
-  pull-requests: write
+permissions: {}
 
 jobs:
   auto-approve:
     name: Auto-approve dependabot PRs
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
+    permissions:
+      pull-requests: write
     steps:
       - name: Auto-approve dependabot PR
         run: gh pr review --approve "$PR_URL" || echo "Already approved or approval not applicable; skipping."
