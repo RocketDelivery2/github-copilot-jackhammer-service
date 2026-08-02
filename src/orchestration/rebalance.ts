@@ -1,3 +1,8 @@
+/**
+ * Rebalances a work-item queue by inserting fix and conversation work ahead of
+ * feature/refactor items whenever failure or ambiguity signals are present.
+ * Pure function: produces a new sorted array without mutating the inputs.
+ */
 import { classifyExecutionEvents, createConversationWorkItem } from './signals.js';
 import type { ExecutionEvent, QueueSignal, QueueSignalKind, WorkItem } from './types.js';
 
@@ -138,12 +143,18 @@ function failureFixId(signal: QueueSignal): string {
   return `fix:${signal.kind}:${signal.workItemId ?? signal.targetItemId ?? 'global'}`;
 }
 
+/** Maps each failure signal kind to the keyword searched in item title/description. */
+const FAILURE_KEYWORD: Partial<Record<QueueSignalKind, string>> = {
+  build_failure: 'build',
+  test_failure: 'test',
+  lint_failure: 'lint',
+};
+
 function itemMatchesFailure(item: WorkItem, kind: QueueSignalKind): boolean {
+  const keyword = FAILURE_KEYWORD[kind];
+  if (!keyword) return false;
   const text = `${item.title} ${item.description ?? ''}`.toLowerCase();
-  if (kind === 'build_failure') return text.includes('build');
-  if (kind === 'test_failure') return text.includes('test');
-  if (kind === 'lint_failure') return text.includes('lint');
-  return false;
+  return text.includes(keyword);
 }
 
 function isFeatureOrRefactorWork(item: WorkItem): boolean {

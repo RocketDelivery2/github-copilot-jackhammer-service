@@ -1,3 +1,10 @@
+/**
+ * Legacy Copilot response parser and queue rebalancer used by the main JackHammer
+ * loop.  Parses structured guidance sections (Plan Steps, Notes, Validation,
+ * Blockers, Errors) from issue/comment bodies and scores CommandQueueItems for
+ * priority ordering.  The orchestration/ module contains the newer WorkItem-based
+ * equivalent for the adaptive preview queue.
+ */
 import type { CommandQueueItem, CopilotGuidance } from './types.js';
 
 // Patterns that indicate Copilot is asking a clarifying question.

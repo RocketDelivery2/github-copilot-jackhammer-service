@@ -1,3 +1,8 @@
+/**
+ * Determines whether two work items can run in parallel and plans safe runnable
+ * batches from a queue, respecting barrier commands, shared worktrees, overlapping
+ * write paths, and incomplete dependencies.
+ */
 import type { ParallelismDecision, WorkItem } from './types.js';
 
 const BARRIER_COMMAND_PATTERN =

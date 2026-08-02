@@ -1,3 +1,9 @@
+/**
+ * Classifies raw execution output and events into typed queue signals that the
+ * adaptive scheduler uses to decide priority, inject fix/conversation work, and
+ * block or promote items.  Also owns the conversation work-item factory and the
+ * shared push-unique / trim-evidence utilities used by command-runner and adapter.
+ */
 import type {
   ConversationKind,
   ExecutionEvent,
@@ -216,7 +222,7 @@ function addIfMatching(
   });
 }
 
-function pushUniqueSignal(signals: QueueSignal[], signal: QueueSignal): void {
+export function pushUniqueSignal(signals: QueueSignal[], signal: QueueSignal): void {
   const exists = signals.some(existing =>
     existing.kind === signal.kind
     && existing.workItemId === signal.workItemId
@@ -226,21 +232,31 @@ function pushUniqueSignal(signals: QueueSignal[], signal: QueueSignal): void {
   if (!exists) signals.push(signal);
 }
 
-function trimEvidence(text: string): string {
+export function trimEvidence(text: string): string {
   const trimmed = text.trim().replace(/\s+/g, ' ');
   return trimmed.length > 200 ? `${trimmed.slice(0, 197)}...` : trimmed;
 }
 
+const CONVERSATION_TITLES: Record<ConversationKind, string> = {
+  agent_question: 'Resolve agent question',
+  missing_tests: 'Clarify missing test coverage',
+  needs_research: 'Resolve research question',
+  needs_architect_decision: 'Request architecture decision',
+  blocked: 'Resolve blocker',
+};
+
+const CONVERSATION_PRIORITIES: Record<ConversationKind, WorkItemPriority> = {
+  agent_question: 'urgent',
+  needs_architect_decision: 'urgent',
+  missing_tests: 'high',
+  blocked: 'high',
+  needs_research: 'medium',
+};
+
 function conversationTitle(kind: ConversationKind): string {
-  if (kind === 'agent_question') return 'Resolve agent question';
-  if (kind === 'missing_tests') return 'Clarify missing test coverage';
-  if (kind === 'needs_research') return 'Resolve research question';
-  if (kind === 'needs_architect_decision') return 'Request architecture decision';
-  return 'Resolve blocker';
+  return CONVERSATION_TITLES[kind];
 }
 
 function conversationPriority(kind: ConversationKind): WorkItemPriority {
-  if (kind === 'agent_question' || kind === 'needs_architect_decision') return 'urgent';
-  if (kind === 'missing_tests' || kind === 'blocked') return 'high';
-  return 'medium';
+  return CONVERSATION_PRIORITIES[kind];
 }
