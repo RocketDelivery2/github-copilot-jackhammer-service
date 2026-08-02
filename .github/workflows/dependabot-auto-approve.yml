@@ -2,9 +2,14 @@ name: dependabot-auto-approve
 
 on:
   pull_request_target:
+    branches: [main]
     types: [opened, synchronize, reopened]
 
 permissions: {}
+
+concurrency:
+  group: dependabot-auto-approve-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   auto-approve:
@@ -14,8 +19,75 @@ jobs:
     permissions:
       pull-requests: write
     steps:
+      - name: Evaluate policy gates
+        id: gates
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          GATE_PASS=true
+          GATE_LOG=""
+
+          LABELS_JSON=$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name]')
+          DENY_COUNT=$(echo "$LABELS_JSON" | jq '[.[] | select(. == "security" or . == "breaking-change" or . == "do-not-merge")] | length')
+          if [ "$DENY_COUNT" -gt "0" ]; then
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Deny-label policy | BLOCKED | security/breaking-change/do-not-merge label present |\n"
+          else
+            GATE_LOG="${GATE_LOG}| Deny-label policy | PASS | no deny labels present |\n"
+          fi
+
+          echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
+          LABELS_CSV=$(echo "$LABELS_JSON" | jq -r 'if length == 0 then "(none)" else join(", ") end')
+          {
+            echo "labels_csv<<EOF"
+            printf "%s\n" "$LABELS_CSV"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          {
+            echo "gate_log<<EOF"
+            printf "$GATE_LOG"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Write decision summary
+        if: always()
+        env:
+          GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
+          GATE_LOG: ${{ steps.gates.outputs.gate_log }}
+          LABELS_CSV: ${{ steps.gates.outputs.labels_csv }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTOR: ${{ github.actor }}
+        run: |
+          {
+            echo "## Dependabot auto-approve policy evaluation -- PR #${PR_NUMBER}"
+            echo ""
+            if [ "$GATE_PASS" = "true" ]; then
+              echo "Decision: ALLOW -- deny-label gate passed; approval may be added."
+            else
+              echo "Decision: BLOCK -- deny-label gate failed; approval NOT added."
+            fi
+            echo ""
+            echo "| Context | Value |"
+            echo "|---------|-------|"
+            echo "| Event actor | ${EVENT_ACTOR} |"
+            echo "| labels | ${LABELS_CSV} |"
+            echo ""
+            echo "| Gate | Result | Reason |"
+            echo "|------|--------|--------|"
+            printf "$GATE_LOG"
+          } >> $GITHUB_STEP_SUMMARY
+
       - name: Auto-approve dependabot PR
-        run: gh pr review --approve "$PR_URL" || echo "Already approved or approval not applicable; skipping."
+        if: steps.gates.outputs.gate_pass == 'true'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REVIEW_DECISION=$(gh pr view "$PR_URL" --json reviewDecision --jq '.reviewDecision // "REVIEW_REQUIRED"')
+          if [ "$REVIEW_DECISION" = "APPROVED" ]; then
+            echo "PR already approved; no new approval required."
+            exit 0
+          fi
+          gh pr review --approve "$PR_URL"

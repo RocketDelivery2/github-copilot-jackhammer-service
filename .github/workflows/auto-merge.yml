@@ -30,7 +30,6 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
       - name: Create draft PR if none exists
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -73,6 +72,8 @@ Auto-merge will NOT fire while this PR is in draft state or while required check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
           PR_CONTEXT_JSON=$(gh pr view "$PR_URL" --json author,isDraft,labels,reviewDecision,mergeStateStatus,number,url)
@@ -80,7 +81,49 @@ Auto-merge will NOT fire while this PR is in draft state or while required check
           GATE_PASS=$(echo "$EVALUATION_JSON" | jq -r '.allowed')
           GATE_LOG=$(echo "$EVALUATION_JSON" | jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"')
 
-          echo "gate_pass=$GATE_PASS" >> "$GITHUB_OUTPUT"
+          # Gate 1: PR must not be draft
+          if [ "$IS_DRAFT" = "true" ]; then
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Gate 1: draft check | BLOCKED | PR is still in draft state |\n"
+          else
+            GATE_LOG="${GATE_LOG}| Gate 1: draft check | PASS | PR is not draft |\n"
+          fi
+
+          # Gate 2: explicit allow - label or allowed bot author
+          LABELS_JSON=$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name]')
+          HAS_LABEL=$(echo "$LABELS_JSON" | jq 'contains(["auto-merge"])')
+
+          AUTHOR_ALLOWED=false
+          for allowed in "dependabot[bot]"; do
+            if [ "$PR_AUTHOR" = "$allowed" ]; then AUTHOR_ALLOWED=true; break; fi
+          done
+
+          if [ "$HAS_LABEL" = "true" ] || [ "$AUTHOR_ALLOWED" = "true" ]; then
+            GATE_LOG="${GATE_LOG}| Gate 2: explicit allow | PASS | auto-merge label present or PR author is allowed bot |\n"
+          else
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Gate 2: explicit allow | BLOCKED | no auto-merge label; PR author not in allowlist |\n"
+          fi
+
+          # Gate 3: policy-sensitive labels block unconditionally
+          SENSITIVE=$(echo "$LABELS_JSON" | jq '[.[] | select(. == "security" or . == "breaking-change" or . == "do-not-merge")] | length')
+          if [ "$SENSITIVE" -gt "0" ]; then
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Gate 3: policy labels | BLOCKED | security/breaking-change/do-not-merge label present |\n"
+          else
+            GATE_LOG="${GATE_LOG}| Gate 3: policy labels | PASS | no policy-sensitive labels |\n"
+          fi
+
+          echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
+          echo "pr_author=$PR_AUTHOR" >> $GITHUB_OUTPUT
+          echo "has_auto_merge_label=$HAS_LABEL" >> $GITHUB_OUTPUT
+          echo "author_allowed=$AUTHOR_ALLOWED" >> $GITHUB_OUTPUT
+          LABELS_CSV=$(echo "$LABELS_JSON" | jq -r 'if length == 0 then "(none)" else join(", ") end')
+          {
+            echo "labels_csv<<EOF"
+            printf "%s\n" "$LABELS_CSV"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
           {
             echo "gate_log<<EOF"
             printf "$GATE_LOG"
@@ -92,7 +135,12 @@ Auto-merge will NOT fire while this PR is in draft state or while required check
         env:
           GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
           GATE_LOG: ${{ steps.gates.outputs.gate_log }}
+          PR_AUTHOR: ${{ steps.gates.outputs.pr_author }}
+          HAS_AUTO_MERGE_LABEL: ${{ steps.gates.outputs.has_auto_merge_label }}
+          AUTHOR_ALLOWED: ${{ steps.gates.outputs.author_allowed }}
+          LABELS_CSV: ${{ steps.gates.outputs.labels_csv }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTOR: ${{ github.actor }}
         run: |
           {
             echo "## Auto-merge gate evaluation -- PR #${PR_NUMBER}"
@@ -103,6 +151,14 @@ Auto-merge will NOT fire while this PR is in draft state or while required check
               echo "Decision: BLOCK -- one or more gates failed; auto-merge NOT armed."
             fi
             echo ""
+            echo "| Context | Value |"
+            echo "|---------|-------|"
+            echo "| PR author | ${PR_AUTHOR} |"
+            echo "| Event actor | ${EVENT_ACTOR} |"
+            echo "| auto-merge label present | ${HAS_AUTO_MERGE_LABEL} |"
+            echo "| author in bot allowlist | ${AUTHOR_ALLOWED} |"
+            echo "| labels | ${LABELS_CSV} |"
+            echo ""
             echo "| Gate | Result | Reason |"
             echo "|------|--------|--------|"
             printf "$GATE_LOG"
@@ -112,7 +168,16 @@ Auto-merge will NOT fire while this PR is in draft state or while required check
         if: steps.gates.outputs.gate_pass == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr merge --auto --squash --delete-branch \
-            "${{ github.event.pull_request.html_url }}" \
-            || echo "Auto-merge already enabled or PR already merged."
+          MERGED_AT=$(gh pr view "$PR_URL" --json mergedAt --jq '.mergedAt')
+          AUTO_MERGE_ENABLED=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$MERGED_AT" != "null" ]; then
+            echo "PR is already merged; auto-merge arming skipped."
+            exit 0
+          fi
+          if [ "$AUTO_MERGE_ENABLED" = "true" ]; then
+            echo "Auto-merge already enabled; nothing to change."
+            exit 0
+          fi
+          gh pr merge --auto --squash --delete-branch "$PR_URL"

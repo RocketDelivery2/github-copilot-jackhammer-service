@@ -21,6 +21,10 @@ checks.
 If any gate fails, auto-merge is NOT armed. The reason is written to the
 workflow step summary for every evaluation (pass or block).
 
+Gate summaries now include context values used by the decision (`PR author`,
+`event actor`, and current labels) to make policy drift and trigger-context
+issues visible in run logs.
+
 ## How to Use
 
 ### Enable auto-merge for a PR
