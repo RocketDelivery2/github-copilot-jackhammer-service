@@ -10,7 +10,7 @@ import type { CodexReviewerPromptInventoryItem } from "../codexReviewerPromptLoa
 
 test("CodexReviewerPromptLoader exposes the canonical reviewer prompt inventory", () => {
   assert.equal(codexReviewerPromptInventory.length, reviewerPromptFilenames.length);
-  assert.equal(codexReviewerPromptInventory.length, 10);
+  assert.equal(codexReviewerPromptInventory.length, 11);
 
   for (const item of codexReviewerPromptInventory) {
     assert.ok(item.id.length > 0);

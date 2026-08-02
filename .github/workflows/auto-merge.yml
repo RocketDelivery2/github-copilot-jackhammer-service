@@ -6,16 +6,17 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   create:
 
+permissions: {}
+
 concurrency:
   group: auto-merge-${{ github.event.pull_request.number || github.ref_name }}
   cancel-in-progress: false
 
-permissions:
-  pull-requests: write
-  contents: write
-
 jobs:
   open-pr-on-branch:
+    permissions:
+      contents: read
+      pull-requests: write
     # When a new branch is pushed, open a DRAFT PR targeting main.
     # Draft prevents auto-merge from arming until a human marks it ready.
     if: >-
@@ -29,111 +30,253 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
       - name: Create draft PR if none exists
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           existing=$(gh pr list --head "${GITHUB_REF_NAME}" --base main --state open --json number --jq length)
           if [ "$existing" = "0" ]; then
+            pr_body=$'Auto-opened by auto-merge workflow. **This PR is a DRAFT.**\n\nAuto-merge is only available for approved bot-authored PRs.\n\nTo enable auto-merge:\n1. Ensure the PR is authored by an approved bot.\n2. Complete changes and mark the PR ready for review.\n3. Add the `auto-merge` label.\n\nAuto-merge will NOT fire while this PR is in draft state or while required checks/reviews are still pending.'
             gh pr create \
               --title "auto: ${GITHUB_REF_NAME}" \
-              --body "Auto-opened by auto-merge workflow. **This PR is a DRAFT.**
-
-To enable auto-merge:
-1. Complete changes and mark the PR ready for review.
-2. Add the \`auto-merge\` label.
-
-Auto-merge will NOT fire while this PR is in draft state." \
+              --body "$pr_body" \
               --base main \
               --head "${GITHUB_REF_NAME}" \
               --draft
           fi
 
   approve-and-merge:
+    permissions:
+      contents: write
+      pull-requests: write
     # Evaluate safety gates before arming auto-merge.
     # Auto-merge is BLOCKED unless ALL gates pass.
     # Every decision (allow or block) is written to the workflow step summary.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
       - name: Evaluate safety gates
         id: gates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-          IS_DRAFT: ${{ github.event.pull_request.draft }}
+          EXPECTED_REPO: RocketDelivery2/github-copilot-jackhammer-service
+          EVENT_REPO: ${{ github.repository }}
           ACTOR: ${{ github.actor }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         run: |
           set -euo pipefail
-          GATE_PASS=true
-          GATE_LOG=""
+          PR_CONTEXT_JSON=$(gh pr view "$PR_URL" --json author,isDraft,labels,reviewDecision,mergeStateStatus,number,url)
+          EVALUATION_JSON=$(AUTO_MERGE_PR_CONTEXT_JSON="$PR_CONTEXT_JSON" AUTO_MERGE_REQUIRE_POLICY_LABEL=true AUTO_MERGE_POLICY_LABEL=auto-merge node --import tsx src/auto-merge-policy-cli.ts)
+          GATE_PASS=$(echo "$EVALUATION_JSON" | jq -r '.allowed')
+          GATE_LOG=$(echo "$EVALUATION_JSON" | jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"')
 
-          # Gate 1: PR must not be draft
-          if [ "$IS_DRAFT" = "true" ]; then
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 1: draft check | BLOCKED | PR is still in draft state |\n"
+          append_gate() {
+            GATE_LOG="${GATE_LOG}| $1 | $2 | $3 |\n"
+          }
+
+          PR_JSON="$(gh pr view "$PR_URL" --json state,isDraft,baseRefName,headRefName,author,labels,reviews,autoMergeRequest)"
+          PR_STATE="$(echo "$PR_JSON" | jq -r '.state')"
+          PR_DRAFT="$(echo "$PR_JSON" | jq -r '.isDraft')"
+          BASE_REF="$(echo "$PR_JSON" | jq -r '.baseRefName')"
+          HEAD_REF="$(echo "$PR_JSON" | jq -r '.headRefName')"
+          PR_AUTHOR="$(echo "$PR_JSON" | jq -r '.author.login')"
+
+          DENY_COUNT="$(echo "$PR_JSON" | jq '[.labels[]? | .name | select(. == "security" or . == "breaking-change" or . == "do-not-merge" or . == "no-auto-merge")] | length')"
+          LOW_RISK_LABEL_COUNT="$(echo "$PR_JSON" | jq '[.labels[]? | .name | select(. == "auto-merge" or . == "low-risk" or . == "dependencies" or . == "chore" or . == "documentation")] | length')"
+          HAS_ACTION_APPROVAL_COUNT="$(echo "$PR_JSON" | jq '[.reviews[]? | select(.author.login == "github-actions[bot]" and .state == "APPROVED")] | length')"
+          AUTO_MERGE_ENABLED="$(echo "$PR_JSON" | jq '.autoMergeRequest != null')"
+
+          if [ "$EVENT_REPO" = "$EXPECTED_REPO" ]; then
+            append_gate "Gate 1: repository match" "PASS" "workflow executing on expected repository"
           else
-            GATE_LOG="${GATE_LOG}| Gate 1: draft check | PASS | PR is not draft |\n"
+            GATE_PASS=false
+            append_gate "Gate 1: repository match" "BLOCKED" "repository mismatch (${EVENT_REPO})"
           fi
 
-          # Gate 2: explicit allow - label or allowed bot actor
-          LABELS_JSON=$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name]')
-          HAS_LABEL=$(echo "$LABELS_JSON" | jq 'contains(["auto-merge"])')
+          if [ "$PR_STATE" = "OPEN" ] && [ "$PR_DRAFT" = "false" ]; then
+            append_gate "Gate 2: open PR check" "PASS" "pull request is open and ready for review"
+          else
+            GATE_PASS=false
+            append_gate "Gate 2: open PR check" "BLOCKED" "pull request is not open-and-ready"
+          fi
+
+          if [ "$BASE_REF" = "main" ]; then
+            append_gate "Gate 3: base branch scope" "PASS" "base branch is main"
+          else
+            GATE_PASS=false
+            append_gate "Gate 3: base branch scope" "BLOCKED" "base branch is ${BASE_REF}"
+          fi
+
+          BRANCH_IN_SCOPE=false
+          case "$HEAD_REF" in
+            dependabot/*|automation/*|autofix/*|chore/*|docs/*)
+              BRANCH_IN_SCOPE=true
+              ;;
+          esac
+
+          if [ "$BRANCH_IN_SCOPE" = "true" ]; then
+            append_gate "Gate 4: head branch scope" "PASS" "head branch is in low-risk automation prefixes"
+          else
+            GATE_PASS=false
+            append_gate "Gate 4: head branch scope" "BLOCKED" "head branch ${HEAD_REF} is outside low-risk prefixes"
+          fi
 
           ACTOR_ALLOWED=false
-          for allowed in "dependabot[bot]"; do
-            if [ "$ACTOR" = "$allowed" ]; then ACTOR_ALLOWED=true; break; fi
-          done
+          case "$ACTOR" in
+            github-actions[bot]|dependabot[bot]|renovate[bot])
+              ACTOR_ALLOWED=true
+              ;;
+            *)
+              if [ "$ACTOR" = "$PR_AUTHOR" ]; then
+                ACTOR_ALLOWED=true
+              fi
+              ;;
+          esac
 
-          if [ "$HAS_LABEL" = "true" ] || [ "$ACTOR_ALLOWED" = "true" ]; then
-            GATE_LOG="${GATE_LOG}| Gate 2: explicit allow | PASS | auto-merge label present or actor is allowed bot |\n"
+          AUTHOR_TRUSTED=false
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR)
+              AUTHOR_TRUSTED=true
+              ;;
+          esac
+
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ] || { [ "$ACTOR_ALLOWED" = "true" ] && [ "$AUTHOR_TRUSTED" = "true" ]; }; then
+            append_gate "Gate 5: actor and trust" "PASS" "trigger actor and PR author association are trusted"
           else
             GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 2: explicit allow | BLOCKED | no auto-merge label; actor not in allowlist |\n"
+            append_gate "Gate 5: actor and trust" "BLOCKED" "actor=${ACTOR}, author=${PR_AUTHOR}, association=${AUTHOR_ASSOCIATION}"
           fi
 
-          # Gate 3: policy-sensitive labels block unconditionally
-          SENSITIVE=$(echo "$LABELS_JSON" | jq '[.[] | select(. == "security" or . == "breaking-change" or . == "do-not-merge")] | length')
-          if [ "$SENSITIVE" -gt "0" ]; then
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 3: policy labels | BLOCKED | security/breaking-change/do-not-merge label present |\n"
+          if [ "$LOW_RISK_LABEL_COUNT" -gt "0" ] || [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            append_gate "Gate 6: low-risk signal" "PASS" "low-risk label present or PR authored by dependabot"
           else
-            GATE_LOG="${GATE_LOG}| Gate 3: policy labels | PASS | no policy-sensitive labels |\n"
+            GATE_PASS=false
+            append_gate "Gate 6: low-risk signal" "BLOCKED" "missing low-risk label and PR is not dependabot-authored"
           fi
 
-          echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
+          if [ "$DENY_COUNT" -eq 0 ]; then
+            append_gate "Gate 7: deny labels" "PASS" "no deny labels present"
+          else
+            GATE_PASS=false
+            append_gate "Gate 7: deny labels" "BLOCKED" "deny label present (security/breaking-change/do-not-merge/no-auto-merge)"
+          fi
+
+          DO_APPROVE=false
+          DO_ARM=false
+          APPROVAL_NOTE="approval missing; workflow will add one approval if gates pass"
+          ARM_NOTE="auto-merge not armed; workflow will arm squash auto-merge if gates pass"
+
+          if [ "$HAS_ACTION_APPROVAL_COUNT" -gt 0 ]; then
+            APPROVAL_NOTE="github-actions[bot] approval already present; workflow will not duplicate approval"
+          fi
+          if [ "$AUTO_MERGE_ENABLED" = "true" ]; then
+            ARM_NOTE="auto-merge already armed; workflow will not duplicate merge arming"
+          fi
+
+          if [ "$GATE_PASS" = "true" ] && [ "$HAS_ACTION_APPROVAL_COUNT" -eq 0 ]; then
+            DO_APPROVE=true
+          fi
+          if [ "$GATE_PASS" = "true" ] && [ "$AUTO_MERGE_ENABLED" != "true" ]; then
+            DO_ARM=true
+          fi
+
+          echo "gate_pass=$GATE_PASS" >> "$GITHUB_OUTPUT"
+          echo "do_approve=$DO_APPROVE" >> "$GITHUB_OUTPUT"
+          echo "do_arm=$DO_ARM" >> "$GITHUB_OUTPUT"
+          echo "approval_note=$APPROVAL_NOTE" >> "$GITHUB_OUTPUT"
+          echo "arm_note=$ARM_NOTE" >> "$GITHUB_OUTPUT"
           {
             echo "gate_log<<EOF"
-            printf "$GATE_LOG"
+            printf "%b" "$GATE_LOG"
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Write gate summary to workflow log
+      - name: Write run manifest and summary
         if: always()
         env:
+          WORKFLOW_NAME: ${{ github.workflow }}
+          RUN_MANIFEST_PATH: .ai/run-manifest.json
           GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
+          DO_APPROVE: ${{ steps.gates.outputs.do_approve }}
+          DO_ARM: ${{ steps.gates.outputs.do_arm }}
+          APPROVAL_NOTE: ${{ steps.gates.outputs.approval_note }}
+          ARM_NOTE: ${{ steps.gates.outputs.arm_note }}
           GATE_LOG: ${{ steps.gates.outputs.gate_log }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
+          mkdir -p .ai
+
+          if [ "$GATE_PASS" = "true" ]; then
+            DECISION="allow"
+            DECISION_LABEL="ALLOW"
+            DECISION_REASON="all gates passed; arming squash auto-merge."
+          else
+            DECISION="block"
+            DECISION_LABEL="BLOCK"
+            DECISION_REASON="one or more gates failed; auto-merge NOT armed."
+          fi
+
+          jq -n \
+            --arg workflow "$WORKFLOW_NAME" \
+            --arg run_id "$RUN_ID" \
+            --arg run_attempt "$RUN_ATTEMPT" \
+            --arg commit "$COMMIT_SHA" \
+            --arg decision "$DECISION" \
+            --arg decision_reason "$DECISION_REASON" \
+            --arg pr_number "$PR_NUMBER" \
+            --arg gate_log "$GATE_LOG" \
+            '{
+              workflow: $workflow,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              commit: $commit,
+              decision: $decision,
+              decision_reason: $decision_reason,
+              pr_number: $pr_number,
+              gate_log: $gate_log
+            }' > "$RUN_MANIFEST_PATH"
+
           {
-            echo "## Auto-merge gate evaluation -- PR #${PR_NUMBER}"
+            echo "## Auto-merge run"
             echo ""
-            if [ "$GATE_PASS" = "true" ]; then
-              echo "Decision: ALLOW -- all gates passed; arming squash auto-merge."
-            else
-              echo "Decision: BLOCK -- one or more gates failed; auto-merge NOT armed."
-            fi
-            echo ""
-            echo "| Gate | Result | Reason |"
-            echo "|------|--------|--------|"
-            printf "$GATE_LOG"
-          } >> $GITHUB_STEP_SUMMARY
+            echo "| Field | Value |"
+            echo "|------|-------|"
+            echo "| Workflow | ${WORKFLOW_NAME} |"
+            echo "| Run ID | ${RUN_ID} |"
+            echo "| Attempt | ${RUN_ATTEMPT} |"
+            echo "| Commit | ${COMMIT_SHA} |"
+            echo "| Decision | ${DECISION_LABEL} |"
+            echo "| Reason | ${DECISION_REASON} |"
+            echo "| PR | #${PR_NUMBER} |"
+            echo "| Manifest | ${RUN_MANIFEST_PATH} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Auto-approve PR
+        if: steps.gates.outputs.do_approve == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr review --approve "${{ github.event.pull_request.html_url }}"
+
+      - name: Upload run manifest artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-manifest
+          path: .ai/run-manifest.json
+          if-no-files-found: warn
 
       - name: Arm squash auto-merge
-        if: steps.gates.outputs.gate_pass == 'true'
+        if: steps.gates.outputs.do_arm == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr merge --auto --squash --delete-branch \
-            "${{ github.event.pull_request.html_url }}" \
-            || echo "Auto-merge already enabled or PR already merged."
+          gh pr merge --auto --squash --delete-branch "${{ github.event.pull_request.html_url }}"

@@ -1,0 +1,194 @@
+name: scheduled-review-orchestration
+
+on:
+  workflow_dispatch:
+    inputs:
+      activity_window_days:
+        description: Activity lookback window in days
+        type: number
+        required: false
+        default: 7
+  schedule:
+    - cron: '11 2,8,14,20 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-review-orchestration-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  orchestrate-reviewers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      REQUIRED_PROMPTS: architecture-reviewer best-practices-reviewer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Evaluate orchestration guardrails
+        id: guardrails
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          guard_pass=true
+          gate_rows=""
+
+          if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            gate_rows="${gate_rows}| Trigger type | PASS | ${EVENT_NAME} is allowed |\n"
+          else
+            guard_pass=false
+            gate_rows="${gate_rows}| Trigger type | BLOCKED | ${EVENT_NAME} is not allowed |\n"
+          fi
+
+          if [ "$REF_NAME" = "$DEFAULT_BRANCH" ]; then
+            gate_rows="${gate_rows}| Branch gate | PASS | Running on default branch (${DEFAULT_BRANCH}) |\n"
+          else
+            guard_pass=false
+            gate_rows="${gate_rows}| Branch gate | BLOCKED | Expected ${DEFAULT_BRANCH}, got ${REF_NAME} |\n"
+          fi
+
+          for prompt_id in $REQUIRED_PROMPTS; do
+            prompt_path=".github/codex/prompts/${prompt_id}.md"
+            if [ -s "$prompt_path" ]; then
+              gate_rows="${gate_rows}| Prompt gate (${prompt_id}) | PASS | ${prompt_path} exists and is non-empty |\n"
+            else
+              guard_pass=false
+              gate_rows="${gate_rows}| Prompt gate (${prompt_id}) | BLOCKED | ${prompt_path} is missing or empty |\n"
+            fi
+          done
+
+          echo "guard_pass=$guard_pass" >> "$GITHUB_OUTPUT"
+          {
+            echo "gate_rows<<EOF"
+            printf "$gate_rows"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write guardrail summary
+        if: always()
+        env:
+          GUARD_PASS: ${{ steps.guardrails.outputs.guard_pass }}
+          GATE_ROWS: ${{ steps.guardrails.outputs.gate_rows }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          {
+            echo "## Scheduled reviewer orchestration"
+            echo ""
+            echo "- Event: \`${EVENT_NAME}\`"
+            echo "- Ref: \`${REF_NAME}\`"
+            echo "- Run: \`${RUN_ID}-${RUN_ATTEMPT}\`"
+            echo ""
+            if [ "$GUARD_PASS" = "true" ]; then
+              echo "Guardrail decision: **ALLOW**"
+            else
+              echo "Guardrail decision: **BLOCK**"
+            fi
+            echo ""
+            echo "| Guardrail | Result | Details |"
+            echo "|---|---|---|"
+            printf "$GATE_ROWS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop on guardrail failure
+        if: steps.guardrails.outputs.guard_pass != 'true'
+        run: exit 1
+
+      - name: Build deterministic reviewer bundles
+        env:
+          ACTIVITY_WINDOW_DAYS: ${{ inputs.activity_window_days || vars.REVIEW_ORCHESTRATION_ACTIVITY_WINDOW_DAYS || '7' }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          run_key="${RUN_ID}-${RUN_ATTEMPT}"
+          run_dir=".ai/reviewer-orchestration/${run_key}"
+          mkdir -p "${run_dir}"
+          manifests_dir="${run_dir}/manifests"
+          bundles_dir="${run_dir}/bundles"
+          mkdir -p "${manifests_dir}" "${bundles_dir}"
+
+          now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          window_start_utc="$(date -u -d "${ACTIVITY_WINDOW_DAYS} days ago" +"%Y-%m-%dT%H:%M:%SZ")"
+          recent_commits_file="${manifests_dir}/recent-commits.txt"
+          git --no-pager log --since="${window_start_utc}" --pretty=format:'%h|%cI|%an|%s' > "${recent_commits_file}"
+          commit_count="$(wc -l < "${recent_commits_file}" | tr -d ' ')"
+
+          summary_rows=""
+          sequence=0
+          for prompt_id in $REQUIRED_PROMPTS; do
+            sequence=$((sequence + 1))
+            sequence_tag="$(printf '%02d' "${sequence}")"
+            prompt_path=".github/codex/prompts/${prompt_id}.md"
+            prompt_sha256="$(sha256sum "${prompt_path}" | awk '{print $1}')"
+            bundle_path="${bundles_dir}/${sequence_tag}-${prompt_id}.md"
+
+            {
+              echo "# Reviewer bundle: ${prompt_id}"
+              echo ""
+              echo "- run_key: ${run_key}"
+              echo "- generated_at_utc: ${now_utc}"
+              echo "- repository: ${GITHUB_REPOSITORY}"
+              echo "- ref_name: ${GITHUB_REF_NAME}"
+              echo "- sha: ${GITHUB_SHA}"
+              echo "- prompt_path: ${prompt_path}"
+              echo "- prompt_sha256: ${prompt_sha256}"
+              echo "- activity_window_days: ${ACTIVITY_WINDOW_DAYS}"
+              echo "- activity_window_start_utc: ${window_start_utc}"
+              echo "- commit_count: ${commit_count}"
+              echo ""
+              echo "## Prompt source"
+              cat "${prompt_path}"
+              echo ""
+              echo "## Recent commits (since window start)"
+              if [ -s "${recent_commits_file}" ]; then
+                cat "${recent_commits_file}"
+              else
+                echo "none"
+              fi
+            } > "${bundle_path}"
+
+            summary_rows="${summary_rows}| ${sequence_tag} | ${prompt_id} | ${prompt_sha256} | ${bundle_path} |\n"
+          done
+
+          {
+            echo "{"
+            echo "  \"run_key\": \"${run_key}\","
+            echo "  \"generated_at_utc\": \"${now_utc}\","
+            echo "  \"repository\": \"${GITHUB_REPOSITORY}\","
+            echo "  \"ref_name\": \"${GITHUB_REF_NAME}\","
+            echo "  \"sha\": \"${GITHUB_SHA}\","
+            echo "  \"activity_window_days\": ${ACTIVITY_WINDOW_DAYS},"
+            echo "  \"activity_window_start_utc\": \"${window_start_utc}\","
+            echo "  \"commit_count\": ${commit_count},"
+            echo "  \"prompt_ids\": [\"architecture-reviewer\", \"best-practices-reviewer\"]"
+            echo "}"
+          } > "${manifests_dir}/run-manifest.json"
+
+          {
+            echo "## Reviewer bundle results"
+            echo ""
+            echo "| Sequence | Prompt | SHA256 | Bundle path |"
+            echo "|---|---|---|---|"
+            printf "$summary_rows"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reviewer orchestration artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-orchestration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ai/reviewer-orchestration/${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error

@@ -14,6 +14,7 @@ import {
   postComment, approvePR, mergePR, closeIssue, deleteBranch,
 } from './github.js';
 import { taskHash } from './hash.js';
+import { buildPullRequestAutomationPolicy } from './runtime-policy.js';
 import { loadState, saveState } from './state.js';
 import { extractCopilotGuidance, rebalanceQueue, detectCopilotQuestion } from './brain.js';
 import type { ActiveWorkItem, CommandQueueItem, CopilotResult, QueueState } from './types.js';
@@ -41,6 +42,7 @@ const workRoot = path.resolve(process.cwd(), '.work');
 const repoDir = path.join(workRoot, `${config.GITHUB_OWNER}-${config.GITHUB_REPO}`);
 const statePath = path.resolve(process.cwd(), config.STATE_FILE);
 const zipPath = path.resolve(process.cwd(), '.ai', 'jackhammer-repo-main.zip');
+const prAutomation = buildPullRequestAutomationPolicy(config);
 
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
@@ -192,16 +194,13 @@ async function handleLinkedPR(state: QueueState, active: ActiveWorkItem): Promis
   }
 
   // Checks pass - maybe approve and/or merge.
-  const canAutoApprove = config.FULL_AUTOPILOT || config.AUTO_APPROVE_PR;
-  const canAutoMerge = config.FULL_AUTOPILOT || config.AUTO_MERGE_PR;
-
   const alreadyApproved = reviews.some(r => r.state === 'APPROVED');
-  if (canAutoApprove && !alreadyApproved) {
+  if (prAutomation.autoApprove && !alreadyApproved) {
     await approvePR(prNumber);
   }
 
-  if (canAutoMerge && pr.mergeable !== false) {
-    await mergePR(prNumber);
+  if (prAutomation.autoMerge && pr.mergeable !== false) {
+    await mergePR(prNumber, prAutomation.mergeMethod);
     await completeActiveWork(state, active, prNumber, pr.headRef);
     return false;
   }
@@ -213,10 +212,10 @@ async function handleLinkedPR(state: QueueState, active: ActiveWorkItem): Promis
 async function completeActiveWork(state: QueueState, active: ActiveWorkItem, prNumber: number, headRef: string): Promise<void> {
   recordResult(state, active, 'merged', `PR #${prNumber} merged successfully.`);
 
-  if (config.FULL_AUTOPILOT || config.AUTO_CLOSE_ISSUE) {
+  if (prAutomation.closeIssueAfterMerge) {
     await closeIssue(active.issueNumber);
   }
-  if (config.FULL_AUTOPILOT || config.AUTO_DELETE_BRANCH) {
+  if (prAutomation.deleteBranchAfterMerge) {
     await deleteBranch(headRef);
   }
   state.activeWorkItem = undefined;
@@ -581,4 +580,3 @@ main().catch(err => {
   console.error(err);
   process.exit(1);
 });
-

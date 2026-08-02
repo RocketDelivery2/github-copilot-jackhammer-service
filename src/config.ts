@@ -7,12 +7,14 @@ const boolish = z.preprocess(v => {
   return ['true', '1', 'yes'].includes(v.toLowerCase());
 }, z.boolean());
 
+const MergeMethodSchema = z.enum(['merge', 'squash', 'rebase']);
+
 const ConfigSchema = z.object({
   OPENAI_API_KEY: z.string().min(1),
   GITHUB_TOKEN: z.string().min(1),
   GITHUB_OWNER: z.string().default('RocketDelivery2'),
-  GITHUB_REPO: z.string().default('TeamBuilder'),
-  REPO_URL: z.string().url().default('https://github.com/RocketDelivery2/TeamBuilder.git'),
+  GITHUB_REPO: z.string().default('github-copilot-jackhammer-service'),
+  REPO_URL: z.string().url().default('https://github.com/RocketDelivery2/github-copilot-jackhammer-service.git'),
   BASE_BRANCH: z.string().default('main'),
   WORK_BRANCH: z.string().default('ai/jackhammer-queue'),
   OPENAI_MODEL: z.string().default('gpt-5.5'),
@@ -30,8 +32,10 @@ const ConfigSchema = z.object({
   FULL_AUTOPILOT: boolish.default(''),
   AUTO_MERGE_PR: boolish.default(''),
   AUTO_APPROVE_PR: boolish.default(''),
-  AUTO_CLOSE_ISSUE: boolish.default(''),
+  AUTO_CLOSE_ISSUE: boolish.optional(),
+  CLOSE_ISSUE_AFTER_MERGE: boolish.optional(),
   AUTO_DELETE_BRANCH: boolish.default(''),
+  MERGE_METHOD: MergeMethodSchema.default('squash'),
   MAX_RUNTIME_HOURS: z.coerce.number().positive().default(24),
   BRAIN_FALLBACK_ENABLED: boolish.default('true'),
   ADAPTIVE_QUEUE_ENABLED: boolish.default(''),
@@ -53,6 +57,14 @@ const ConfigSchema = z.object({
   DISCUSSIONS_DEFAULT_TYPE: z.enum(['auto', 'release', 'weekly-update', 'feature-spotlight', 'architecture', 'roadmap', 'community-question']).default('auto'),
   DISCUSSIONS_HASHTAGS: z.string().default(DEFAULT_DISCUSSION_HASHTAGS_CSV),
   RUN_ONCE: boolish.default(''),
+}).transform(parsed => {
+  const closeIssueAfterMerge = parsed.AUTO_CLOSE_ISSUE ?? parsed.CLOSE_ISSUE_AFTER_MERGE ?? false;
+
+  return {
+    ...parsed,
+    AUTO_CLOSE_ISSUE: closeIssueAfterMerge,
+    CLOSE_ISSUE_AFTER_MERGE: closeIssueAfterMerge,
+  };
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;

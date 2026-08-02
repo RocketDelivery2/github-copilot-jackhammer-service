@@ -1,0 +1,242 @@
+name: continuous-audit
+
+on:
+  schedule:
+    # Runs at 06:00, 14:00, and 22:00 UTC daily
+    - cron: '0 6 * * *'
+    - cron: '0 14 * * *'
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+    inputs:
+      create_issue:
+        description: 'Create a tracking issue if findings exceed threshold'
+        required: false
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: Read-only continuous audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run typecheck (lint)
+        id: lint
+        run: |
+          set +e
+          npm run lint 2>&1 | tee /tmp/lint-output.txt
+          LINT_EXIT=${PIPESTATUS[0]}
+          echo "exit_code=$LINT_EXIT" >> $GITHUB_OUTPUT
+          echo "lint_exit=$LINT_EXIT" >> $GITHUB_ENV
+          set -e
+
+      - name: Run tests
+        id: tests
+        run: |
+          set +e
+          npm test 2>&1 | tee /tmp/test-output.txt
+          TEST_EXIT=${PIPESTATUS[0]}
+          echo "exit_code=$TEST_EXIT" >> $GITHUB_OUTPUT
+          echo "test_exit=$TEST_EXIT" >> $GITHUB_ENV
+          set -e
+
+      - name: Run build check
+        id: build
+        run: |
+          set +e
+          npm run build 2>&1 | tee /tmp/build-output.txt
+          BUILD_EXIT=${PIPESTATUS[0]}
+          echo "exit_code=$BUILD_EXIT" >> $GITHUB_OUTPUT
+          echo "build_exit=$BUILD_EXIT" >> $GITHUB_ENV
+          set -e
+
+      - name: Scan for common security patterns
+        id: security
+        run: |
+          set +e
+          FINDINGS=""
+
+          # Check for hardcoded secrets patterns (heuristic only)
+          if grep -rn --include="*.ts" --include="*.js" \
+              -E '(password|secret|api_key|apikey|token)\s*=\s*["\x27][^"'\'']{8,}' \
+              src/ scripts/ 2>/dev/null | grep -v '\.example' | grep -v '\.test\.' | head -20 > /tmp/secret-scan.txt; then
+            FINDINGS=$(wc -l < /tmp/secret-scan.txt)
+          else
+            FINDINGS=0
+          fi
+
+          echo "secret_findings=$FINDINGS" >> $GITHUB_OUTPUT
+          echo "secret_exit=0" >> $GITHUB_ENV
+          set -e
+
+      - name: Check for TODO/FIXME/HACK density
+        id: debt
+        run: |
+          set +e
+          TODO_COUNT=$(grep -rn --include="*.ts" -E '(TODO|FIXME|HACK|XXX)' src/ 2>/dev/null | wc -l || echo "0")
+          echo "todo_count=$TODO_COUNT" >> $GITHUB_OUTPUT
+          set -e
+
+      - name: Produce audit report
+        id: report
+        env:
+          LINT_EXIT: ${{ steps.lint.outputs.exit_code }}
+          TEST_EXIT: ${{ steps.tests.outputs.exit_code }}
+          BUILD_EXIT: ${{ steps.build.outputs.exit_code }}
+          SECRET_FINDINGS: ${{ steps.security.outputs.secret_findings }}
+          TODO_COUNT: ${{ steps.debt.outputs.todo_count }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SEVERITY=0
+          FINDINGS_SUMMARY=""
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Score findings
+          if [ "$LINT_EXIT" != "0" ]; then
+            SEVERITY=$((SEVERITY + 3))
+            FINDINGS_SUMMARY="${FINDINGS_SUMMARY}\n- ❌ **Typecheck/lint failed** (exit $LINT_EXIT)"
+          else
+            FINDINGS_SUMMARY="${FINDINGS_SUMMARY}\n- ✅ Typecheck/lint passed"
+          fi
+
+          if [ "$TEST_EXIT" != "0" ]; then
+            SEVERITY=$((SEVERITY + 5))
+            FINDINGS_SUMMARY="${FINDINGS_SUMMARY}\n- ❌ **Tests failed** (exit $TEST_EXIT)"
+          else
+            FINDINGS_SUMMARY="${FINDINGS_SUMMARY}\n- ✅ Tests passed"
+          fi
+
+          if [ "$BUILD_EXIT" != "0" ]; then
+            SEVERITY=$((SEVERITY + 4))
+            FINDINGS_SUMMARY="${FINDINGS_SUMMARY}\n- ❌ **Build failed** (exit $BUILD_EXIT)"
+          else
+            FINDINGS_SUMMARY="${FINDINGS_SUMMARY}\n- ✅ Build passed"
+          fi
+
+          if [ "${SECRET_FINDINGS:-0}" -gt "0" ]; then
+            SEVERITY=$((SEVERITY + 10))
+            FINDINGS_SUMMARY="${FINDINGS_SUMMARY}\n- ⚠️ **Possible hardcoded secrets detected** ($SECRET_FINDINGS pattern matches)"
+          fi
+
+          if [ "${TODO_COUNT:-0}" -gt "20" ]; then
+            SEVERITY=$((SEVERITY + 1))
+            FINDINGS_SUMMARY="${FINDINGS_SUMMARY}\n- 📝 High TODO/FIXME density: $TODO_COUNT items"
+          else
+            FINDINGS_SUMMARY="${FINDINGS_SUMMARY}\n- 📝 TODO/FIXME count: ${TODO_COUNT:-0}"
+          fi
+
+          # Write step summary
+          {
+            echo "## Continuous Audit Report — $TIMESTAMP"
+            echo ""
+            echo "**Severity score:** $SEVERITY / 22"
+            echo ""
+            echo "### Findings"
+            printf "$FINDINGS_SUMMARY"
+            echo ""
+            echo ""
+            echo "**Run:** $RUN_URL"
+          } >> $GITHUB_STEP_SUMMARY
+
+          echo "severity=$SEVERITY" >> $GITHUB_OUTPUT
+          echo "findings_summary<<EOF" >> $GITHUB_OUTPUT
+          printf "$FINDINGS_SUMMARY" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+
+      - name: Upload audit artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-report-${{ github.run_number }}
+          retention-days: 14
+          path: |
+            /tmp/lint-output.txt
+            /tmp/test-output.txt
+            /tmp/build-output.txt
+            /tmp/secret-scan.txt
+
+      - name: Create or update tracking issue when severity exceeds threshold
+        if: |
+          steps.report.outputs.severity != '0' &&
+          (github.event_name == 'schedule' ||
+           (github.event_name == 'workflow_dispatch' && github.event.inputs.create_issue == 'true'))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEVERITY: ${{ steps.report.outputs.severity }}
+          FINDINGS: ${{ steps.report.outputs.findings_summary }}
+          TIMESTAMP: ${{ steps.report.outputs.timestamp }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          THRESHOLD=3
+          if [ "$SEVERITY" -lt "$THRESHOLD" ]; then
+            echo "Severity $SEVERITY is below threshold $THRESHOLD; skipping issue creation."
+            exit 0
+          fi
+
+          TITLE="[Audit] Continuous audit findings — $TIMESTAMP"
+          BODY_FILE=$(mktemp)
+          {
+            echo "## Continuous Audit Findings"
+            echo ""
+            echo "**Timestamp:** $TIMESTAMP"
+            echo "**Severity score:** $SEVERITY / 22"
+            echo "**Threshold:** $THRESHOLD (issue created when severity >= threshold)"
+            echo ""
+            echo "### Findings"
+            echo ""
+            printf '%s\n' "$FINDINGS"
+            echo ""
+            echo "### Action items"
+            echo ""
+            echo "Please review the findings above and address any failures."
+            echo "High-severity items (tests, build, lint) should be fixed before merging new changes."
+            echo ""
+            echo "**Workflow run:** $RUN_URL"
+            echo ""
+            echo "---"
+            echo "*Auto-created by the continuous-audit workflow.*"
+          } > "$BODY_FILE"
+
+          # Check if a recent open audit issue already exists
+          EXISTING=$(gh issue list \
+            --label "automation" \
+            --label "audit" \
+            --state open \
+            --json number,title,createdAt \
+            --jq '[.[] | select(.title | startswith("[Audit]"))] | first | .number' \
+            2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "Updating existing audit issue #$EXISTING"
+            gh issue comment "$EXISTING" --body-file "$BODY_FILE"
+          else
+            echo "Creating new audit tracking issue"
+            gh issue create \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE" \
+              --label "automation" \
+              --label "audit" \
+              2>/dev/null || \
+            gh issue create \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE"
+          fi
+          rm -f "$BODY_FILE"
