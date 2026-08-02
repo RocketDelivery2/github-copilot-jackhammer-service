@@ -6,16 +6,17 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   create:
 
+permissions: {}
+
 concurrency:
   group: auto-merge-${{ github.event.pull_request.number || github.ref_name }}
   cancel-in-progress: false
 
-permissions:
-  pull-requests: write
-  contents: write
-
 jobs:
   open-pr-on-branch:
+    permissions:
+      contents: read
+      pull-requests: write
     # When a new branch is pushed, open a DRAFT PR targeting main.
     # Draft prevents auto-merge from arming until a human marks it ready.
     if: >-
@@ -38,23 +39,34 @@ jobs:
               --title "auto: ${GITHUB_REF_NAME}" \
               --body "Auto-opened by auto-merge workflow. **This PR is a DRAFT.**
 
-To enable auto-merge:
-1. Complete changes and mark the PR ready for review.
-2. Add the \`auto-merge\` label.
+Auto-merge is only available for approved bot-authored PRs.
 
-Auto-merge will NOT fire while this PR is in draft state." \
+To enable auto-merge:
+1. Ensure the PR is authored by an approved bot.
+2. Complete changes and mark the PR ready for review.
+3. Add the \`auto-merge\` label.
+
+Auto-merge will NOT fire while this PR is in draft state or while required checks/reviews are still pending." \
               --base main \
               --head "${GITHUB_REF_NAME}" \
               --draft
           fi
 
   approve-and-merge:
+    permissions:
+      contents: write
+      pull-requests: write
     # Evaluate safety gates before arming auto-merge.
     # Auto-merge is BLOCKED unless ALL gates pass.
     # Every decision (allow or block) is written to the workflow step summary.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
       - name: Evaluate safety gates
         id: gates
         env:
@@ -64,8 +76,10 @@ Auto-merge will NOT fire while this PR is in draft state." \
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
-          GATE_PASS=true
-          GATE_LOG=""
+          PR_CONTEXT_JSON=$(gh pr view "$PR_URL" --json author,isDraft,labels,reviewDecision,mergeStateStatus,number,url)
+          EVALUATION_JSON=$(AUTO_MERGE_PR_CONTEXT_JSON="$PR_CONTEXT_JSON" AUTO_MERGE_REQUIRE_POLICY_LABEL=true AUTO_MERGE_POLICY_LABEL=auto-merge node --import tsx src/auto-merge-policy-cli.ts)
+          GATE_PASS=$(echo "$EVALUATION_JSON" | jq -r '.allowed')
+          GATE_LOG=$(echo "$EVALUATION_JSON" | jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"')
 
           # Gate 1: PR must not be draft
           if [ "$IS_DRAFT" = "true" ]; then
@@ -109,12 +123,12 @@ Auto-merge will NOT fire while this PR is in draft state." \
             echo "labels_csv<<EOF"
             printf "%s\n" "$LABELS_CSV"
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
           {
             echo "gate_log<<EOF"
             printf "$GATE_LOG"
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
       - name: Write gate summary to workflow log
         if: always()

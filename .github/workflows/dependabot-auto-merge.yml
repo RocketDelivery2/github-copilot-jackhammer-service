@@ -5,9 +5,7 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: dependabot-auto-merge-${{ github.event.pull_request.number }}
@@ -18,7 +16,15 @@ jobs:
     name: Enable auto-merge for dependabot PRs
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
       - name: Evaluate policy gates
         id: gates
         env:
@@ -26,8 +32,10 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           set -euo pipefail
-          GATE_PASS=true
-          GATE_LOG=""
+          PR_CONTEXT_JSON=$(gh pr view "$PR_URL" --json author,isDraft,labels,reviewDecision,mergeStateStatus,number,url)
+          EVALUATION_JSON=$(AUTO_MERGE_PR_CONTEXT_JSON="$PR_CONTEXT_JSON" AUTO_MERGE_REQUIRE_POLICY_LABEL=false AUTO_MERGE_APPROVED_BOT_AUTHORS='dependabot[bot]' node --import tsx src/auto-merge-policy-cli.ts)
+          GATE_PASS=$(echo "$EVALUATION_JSON" | jq -r '.allowed')
+          GATE_LOG=$(echo "$EVALUATION_JSON" | jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"')
 
           LABELS_JSON=$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name]')
           DENY_COUNT=$(echo "$LABELS_JSON" | jq '[.[] | select(. == "security" or . == "breaking-change" or . == "do-not-merge")] | length')
@@ -39,7 +47,7 @@ jobs:
             GATE_LOG="${GATE_LOG}| Deny-label policy | PASS | no deny labels present |\n"
           fi
 
-          echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
+          echo "gate_pass=$GATE_PASS" >> "$GITHUB_OUTPUT"
           LABELS_CSV=$(echo "$LABELS_JSON" | jq -r 'if length == 0 then "(none)" else join(", ") end')
           {
             echo "labels_csv<<EOF"
@@ -50,7 +58,7 @@ jobs:
             echo "gate_log<<EOF"
             printf "$GATE_LOG"
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
       - name: Write decision summary
         if: always()
@@ -65,9 +73,9 @@ jobs:
             echo "## Dependabot auto-merge policy evaluation -- PR #${PR_NUMBER}"
             echo ""
             if [ "$GATE_PASS" = "true" ]; then
-              echo "Decision: ALLOW -- deny-label gate passed; auto-merge may be armed."
+              echo "Decision: ALLOW -- all gates passed; auto-merge may be armed."
             else
-              echo "Decision: BLOCK -- deny-label gate failed; auto-merge NOT armed."
+              echo "Decision: BLOCK -- one or more gates failed; auto-merge NOT armed."
             fi
             echo ""
             echo "| Context | Value |"
@@ -96,4 +104,4 @@ jobs:
             echo "Auto-merge already enabled; nothing to change."
             exit 0
           fi
-          gh pr merge --auto --squash "$PR_URL"
+          gh pr merge --auto --squash --delete-branch "$PR_URL"
