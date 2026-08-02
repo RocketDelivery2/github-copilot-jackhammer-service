@@ -1440,4 +1440,3 @@ function buildCommandExecutionResult(
     workItemId: override.workItemId,
   };
 }
-

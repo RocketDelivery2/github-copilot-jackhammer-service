@@ -1,3 +1,10 @@
+/**
+ * Legacy Copilot response parser and queue rebalancer used by the main JackHammer
+ * loop.  Parses structured guidance sections (Plan Steps, Notes, Validation,
+ * Blockers, Errors) from issue/comment bodies and scores CommandQueueItems for
+ * priority ordering.  The orchestration/ module contains the newer WorkItem-based
+ * equivalent for the adaptive preview queue.
+ */
 import type { CommandQueueItem, CopilotGuidance } from './types.js';
 
 // Patterns that indicate Copilot is asking a clarifying question.
@@ -168,6 +175,12 @@ type RebalanceSignals = {
   isProductionReady: boolean;
 };
 
+type ScoredCommandQueueItem = {
+  item: CommandQueueItem;
+  score: number;
+  originalIndex: number;
+};
+
 /**
  * Rebalances a command queue based on priority signals.
  * Returns a new array sorted by computed priority (high items first).
@@ -210,5 +223,19 @@ export function rebalanceQueue(
     return score;
   }
 
-  return [...queue].sort((a, b) => scoreItem(a) - scoreItem(b));
+  const scoredQueue: ScoredCommandQueueItem[] = queue.map((item, originalIndex) => ({
+    item,
+    score: scoreItem(item),
+    originalIndex,
+  }));
+
+  scoredQueue.sort((left, right) => {
+    if (left.score !== right.score) {
+      return left.score - right.score;
+    }
+
+    return left.originalIndex - right.originalIndex;
+  });
+
+  return scoredQueue.map(entry => entry.item);
 }

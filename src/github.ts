@@ -1,8 +1,18 @@
 import { Octokit } from '@octokit/rest';
 import { config, labels } from './config.js';
+import type { AppConfig } from './config.js';
 import type { AiTask } from './types.js';
 
 const octokit = new Octokit({ auth: config.GITHUB_TOKEN });
+
+/** Extracts the HTTP status code from an Octokit RequestError or returns undefined. */
+function httpStatus(err: unknown): number | undefined {
+  if (typeof err === 'object' && err !== null) {
+    const candidate = (err as { status?: unknown }).status;
+    if (typeof candidate === 'number') return candidate;
+  }
+  return undefined;
+}
 
 export async function doctorGithub(): Promise<void> {
   const repo = await octokit.repos.get({ owner: config.GITHUB_OWNER, repo: config.GITHUB_REPO });
@@ -13,8 +23,8 @@ export async function ensureLabels(): Promise<void> {
   for (const name of labels) {
     try {
       await octokit.issues.getLabel({ owner: config.GITHUB_OWNER, repo: config.GITHUB_REPO, name });
-    } catch (err: any) {
-      if (err.status !== 404) throw err;
+    } catch (err: unknown) {
+      if (httpStatus(err) !== 404) throw err;
       await octokit.issues.createLabel({
         owner: config.GITHUB_OWNER,
         repo: config.GITHUB_REPO,
@@ -267,18 +277,21 @@ export async function approvePR(prNumber: number): Promise<void> {
   console.log(`Approved PR #${prNumber}`);
 }
 
-export async function mergePR(prNumber: number): Promise<void> {
+export async function mergePR(
+  prNumber: number,
+  mergeMethod: AppConfig['MERGE_METHOD'],
+): Promise<void> {
   if (config.DRY_RUN) {
-    console.log(`[DRY RUN] Would merge PR #${prNumber}`);
+    console.log(`[DRY RUN] Would merge PR #${prNumber} with ${mergeMethod}`);
     return;
   }
   await octokit.pulls.merge({
     owner: config.GITHUB_OWNER,
     repo: config.GITHUB_REPO,
     pull_number: prNumber,
-    merge_method: 'squash',
+    merge_method: mergeMethod,
   });
-  console.log(`Merged PR #${prNumber}`);
+  console.log(`Merged PR #${prNumber} with ${mergeMethod}`);
 }
 
 export async function closeIssue(issueNumber: number): Promise<void> {
@@ -307,8 +320,8 @@ export async function deleteBranch(branchName: string): Promise<void> {
       ref: `heads/${branchName}`,
     });
     console.log(`Deleted branch ${branchName}`);
-  } catch (err: any) {
-    if (err.status !== 422) throw err;
+  } catch (err: unknown) {
+      if (httpStatus(err) !== 422) throw err;
     console.log(`Branch ${branchName} already deleted or not found.`);
   }
 }

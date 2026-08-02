@@ -1,0 +1,218 @@
+name: safe-automerge
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to evaluate for automerge'
+        required: true
+        type: string
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  evaluate-automerge:
+    name: Evaluate safe automerge eligibility
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve PR number
+        id: resolve
+        env:
+          PR_NUMBER_INPUT: ${{ github.event.inputs.pr_number }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          if [ -n "$PR_NUMBER_INPUT" ]; then
+            echo "pr_number=$PR_NUMBER_INPUT" >> $GITHUB_OUTPUT
+          else
+            echo "pr_number=$EVENT_PR_NUMBER" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Evaluate automerge safety gates
+        id: gates
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          GATE_PASS=true
+          GATE_LOG=""
+          BLOCK_REASON=""
+
+          # Fetch PR metadata
+          PR_JSON=$(gh pr view "$PR_NUMBER" \
+            --repo "$REPO" \
+            --json author,labels,isDraft,state,headRefName,reviewDecision,statusCheckRollup \
+            2>/dev/null || echo "{}")
+
+          PR_AUTHOR=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('author',{}).get('login','unknown'))" 2>/dev/null || echo "unknown")
+          PR_DRAFT=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(str(d.get('isDraft',True)).lower())" 2>/dev/null || echo "true")
+          PR_STATE=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('state','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
+          LABELS_JSON=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps([l['name'] for l in d.get('labels',[])]))" 2>/dev/null || echo "[]")
+          REVIEW_DECISION=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('reviewDecision',''))" 2>/dev/null || echo "")
+
+          echo "PR #$PR_NUMBER: author=$PR_AUTHOR, draft=$PR_DRAFT, state=$PR_STATE, review=$REVIEW_DECISION"
+
+          # Gate 1: PR must be open
+          if [ "$PR_STATE" != "OPEN" ]; then
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Gate 1: PR state | BLOCKED | PR is not open (state: $PR_STATE) |\n"
+          else
+            GATE_LOG="${GATE_LOG}| Gate 1: PR state | PASS | PR is open |\n"
+          fi
+
+          # Gate 2: PR must not be draft
+          if [ "$PR_DRAFT" = "true" ]; then
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Gate 2: draft check | BLOCKED | PR is still in draft state |\n"
+          else
+            GATE_LOG="${GATE_LOG}| Gate 2: draft check | PASS | PR is not draft |\n"
+          fi
+
+          # Gate 3: Author must be a known automation actor
+          # Note: workflows authored by improvement-pr-bot run as 'github-actions[bot]'
+          AUTOMATION_ACTORS="github-actions[bot] dependabot[bot]"
+          ACTOR_ALLOWED=false
+          for allowed in $AUTOMATION_ACTORS; do
+            if [ "$PR_AUTHOR" = "$allowed" ]; then
+              ACTOR_ALLOWED=true
+              break
+            fi
+          done
+
+          # Also allow if the 'automation' label is present (human-blessed automation PR)
+          HAS_AUTOMATION_LABEL=$(echo "$LABELS_JSON" | python3 -c "import sys,json; labels=json.load(sys.stdin); print('true' if 'automation' in labels else 'false')" 2>/dev/null || echo "false")
+
+          if [ "$ACTOR_ALLOWED" = "true" ] || [ "$HAS_AUTOMATION_LABEL" = "true" ]; then
+            GATE_LOG="${GATE_LOG}| Gate 3: automation actor | PASS | author=$PR_AUTHOR or 'automation' label present |\n"
+          else
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Gate 3: automation actor | BLOCKED | author '$PR_AUTHOR' is not an automation actor and 'automation' label is absent |\n"
+          fi
+
+          # Gate 4: Blocking labels must not be present
+          BLOCKING_LABELS="security breaking-change do-not-merge"
+          HAS_BLOCKER=$(echo "$LABELS_JSON" | python3 -c "
+          import sys, json
+          labels = json.load(sys.stdin)
+          blockers = {'security', 'breaking-change', 'do-not-merge'}
+          found = [l for l in labels if l in blockers]
+          print(','.join(found) if found else '')
+          " 2>/dev/null || echo "")
+
+          if [ -n "$HAS_BLOCKER" ]; then
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Gate 4: blocking labels | BLOCKED | labels present: $HAS_BLOCKER |\n"
+          else
+            GATE_LOG="${GATE_LOG}| Gate 4: blocking labels | PASS | no blocking labels |\n"
+          fi
+
+          # Gate 5: must have 'auto-merge' OR 'improvement' label (explicit opt-in)
+          HAS_MERGE_LABEL=$(echo "$LABELS_JSON" | python3 -c "
+          import sys, json
+          labels = json.load(sys.stdin)
+          optin = {'auto-merge', 'improvement'}
+          print('true' if any(l in optin for l in labels) else 'false')
+          " 2>/dev/null || echo "false")
+
+          if [ "$HAS_MERGE_LABEL" = "true" ]; then
+            GATE_LOG="${GATE_LOG}| Gate 5: merge opt-in label | PASS | auto-merge or improvement label present |\n"
+          else
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Gate 5: merge opt-in label | BLOCKED | neither auto-merge nor improvement label present |\n"
+          fi
+
+          # Gate 6: Review decision must be APPROVED (when branch protection requires it)
+          # Note: This workflow does NOT approve PRs. It only arms auto-merge if already approved.
+          if [ "$REVIEW_DECISION" = "APPROVED" ] || [ "$REVIEW_DECISION" = "" ]; then
+            GATE_LOG="${GATE_LOG}| Gate 6: review decision | PASS | decision=$REVIEW_DECISION (GitHub will enforce required reviews) |\n"
+          else
+            GATE_PASS=false
+            GATE_LOG="${GATE_LOG}| Gate 6: review decision | BLOCKED | decision=$REVIEW_DECISION — required review not yet approved |\n"
+          fi
+
+          echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
+          {
+            echo "gate_log<<EOF"
+            printf "$GATE_LOG"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          echo "pr_author=$PR_AUTHOR" >> $GITHUB_OUTPUT
+
+      - name: Write gate summary
+        if: always()
+        env:
+          GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
+          GATE_LOG: ${{ steps.gates.outputs.gate_log }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          {
+            echo "## Safe Automerge Gate Evaluation — PR #${PR_NUMBER}"
+            echo ""
+            if [ "$GATE_PASS" = "true" ]; then
+              echo "**Decision: ✅ ALLOW** — All gates passed; arming squash automerge."
+            else
+              echo "**Decision: 🚫 BLOCK** — One or more gates failed; automerge NOT armed."
+            fi
+            echo ""
+            echo "| Gate | Result | Reason |"
+            echo "|------|--------|--------|"
+            printf "$GATE_LOG"
+            echo ""
+            echo "> **Note:** This workflow does not bypass required reviews or branch protections."
+            echo "> GitHub enforces those independently. Arming automerge only schedules the merge"
+            echo "> to occur once all required checks and reviews are satisfied."
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Post informative comment when blocked
+        if: steps.gates.outputs.gate_pass == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATE_LOG: ${{ steps.gates.outputs.gate_log }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          COMMENT_FILE=$(mktemp)
+          {
+            echo "## Safe Automerge — Blocked"
+            echo ""
+            echo "Automerge has **not** been armed for this PR because one or more safety gates failed."
+            echo ""
+            echo "| Gate | Result | Reason |"
+            echo "|------|--------|--------|"
+            printf '%s' "$GATE_LOG"
+            echo ""
+            echo "**To enable automerge**, ensure:"
+            echo "1. The PR is not in draft state"
+            echo "2. The PR author is an automation actor OR the \`automation\` label is present"
+            echo "3. No blocking labels (\`security\`, \`breaking-change\`, \`do-not-merge\`) are present"
+            echo "4. Either the \`auto-merge\` or \`improvement\` label is present"
+            echo "5. All required reviews are approved"
+            echo ""
+            echo "This check will re-run automatically when the PR is updated."
+            echo ""
+            echo "---"
+            echo "*Posted by the safe-automerge workflow.*"
+          } > "$COMMENT_FILE"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$COMMENT_FILE" 2>/dev/null || true
+          rm -f "$COMMENT_FILE"
+
+      - name: Arm squash automerge
+        if: steps.gates.outputs.gate_pass == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr merge --auto --squash --delete-branch "$PR_NUMBER" --repo "$REPO" \
+            || echo "Automerge already enabled or PR already merged; no action needed."
+          echo "Automerge armed for PR #$PR_NUMBER (squash). GitHub will merge when all required checks and reviews pass."

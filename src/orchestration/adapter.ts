@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises';
 import { planRunnableBatch } from './parallelism.js';
 import { rebalanceWorkItems } from './rebalance.js';
-import { classifyExecutionSignals } from './signals.js';
+import { classifyExecutionSignals, pushUniqueSignal, trimEvidence } from './signals.js';
 import {
   commandResultToExecutionEvents,
   commandResultToQueueSignals,
@@ -851,21 +851,6 @@ function activeWorkItemId(item: ActiveWorkItem): string {
   return `issue:${item.issueNumber}`;
 }
 
-function pushUniqueSignal(signals: QueueSignal[], signal: QueueSignal): void {
-  const exists = signals.some(existing =>
-    existing.kind === signal.kind
-    && existing.workItemId === signal.workItemId
-    && existing.targetItemId === signal.targetItemId
-  );
-
-  if (!exists) signals.push(signal);
-}
-
-function trimEvidence(text: string): string {
-  const trimmed = text.trim().replace(/\s+/g, ' ');
-  return trimmed.length > 200 ? `${trimmed.slice(0, 197)}...` : trimmed;
-}
-
 function normalizeCaptureLimit(limit: number): number {
   if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit < 0) {
     throw new RangeError('captureLimit must be a non-negative integer.');
@@ -1008,5 +993,3 @@ function cloneSkillApprovalCheckpointTransition(
 function isEnoent(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
-
-

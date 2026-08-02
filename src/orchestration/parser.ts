@@ -1,3 +1,8 @@
+/**
+ * Parses markdown text into typed command candidates (shell commands, agent
+ * commands, validation runs, research tasks, and conversation items).  Used by
+ * the adaptive queue to convert AI response bodies into executable work items.
+ */
 import type { ParsedCommandKind } from './types.js';
 
 export type CommandCandidateSource = 'code_block' | 'markdown_line';

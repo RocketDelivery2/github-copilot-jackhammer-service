@@ -6,6 +6,7 @@ import { test } from "node:test";
 const reviewerPromptPaths = [
   ".github/codex/prompts/project-monitor.md",
   ".github/codex/prompts/architecture-reviewer.md",
+  ".github/codex/prompts/best-practices-reviewer.md",
   ".github/codex/prompts/safety-test-reviewer.md",
   ".github/codex/prompts/security-reviewer.md",
   ".github/codex/prompts/dependency-reviewer.md",
@@ -13,6 +14,7 @@ const reviewerPromptPaths = [
   ".github/codex/prompts/regression-test-planner.md",
   ".github/codex/prompts/release-manager.md",
   ".github/codex/prompts/azure-readiness-reviewer.md",
+  ".github/codex/prompts/best-practices-reviewer.md",
   ".github/codex/prompts/merge-governor.md",
 ] as const;
 

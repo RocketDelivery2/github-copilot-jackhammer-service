@@ -290,3 +290,40 @@ describe('no runtime scheduling behavior changes', () => {
     assert.ok(msg.id.length > 0);
   });
 });
+
+describe('DS/Algo — AgentRegistry Map index (O(1) getAgentById)', () => {
+  it('byId map contains exactly the same entries as the agents array', () => {
+    const registry = createDefaultAgentRegistry();
+    assert.equal(registry.byId.size, registry.agents.length,
+      'byId map must have the same entry count as agents array');
+    for (const agent of registry.agents) {
+      assert.strictEqual(registry.byId.get(agent.id), agent,
+        `byId map entry for '${agent.id}' must be reference-equal to the agents array entry`);
+    }
+  });
+
+  it('getAgentById via Map returns undefined for unknown ids', () => {
+    const registry = createDefaultAgentRegistry();
+    assert.equal(getAgentById(registry, 'no-such-agent'), undefined);
+  });
+
+  it('getAgentById is consistent with agents array lookup for all default agents', () => {
+    const registry = createDefaultAgentRegistry();
+    for (const agent of registry.agents) {
+      const byMap = getAgentById(registry, agent.id);
+      const byFind = registry.agents.find(a => a.id === agent.id);
+      assert.deepStrictEqual(byMap, byFind,
+        `getAgentById('${agent.id}') via Map must equal linear-scan result`);
+    }
+  });
+
+  it('selectAgentsForWorkItem produces no duplicate agents regardless of input', () => {
+    const registry = createDefaultAgentRegistry();
+    // Title that overlaps multiple matchers (review + architecture + A2A + test + release)
+    const selected = selectAgentsForWorkItem(registry, {
+      title: 'Architecture code review of A2A agent test suite release deployment',
+    });
+    const ids = selected.map(a => a.id);
+    assert.equal(ids.length, new Set(ids).size, 'selectAgentsForWorkItem must never return duplicates');
+  });
+});

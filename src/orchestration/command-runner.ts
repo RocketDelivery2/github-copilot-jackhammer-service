@@ -1,7 +1,11 @@
+/**
+ * Runs external commands in a child process with timeout, captures stdout/stderr,
+ * and converts the raw result into typed execution events and queue signals.
+ */
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
-import { classifyExecutionSignals } from './signals.js';
+import { classifyExecutionSignals, pushUniqueSignal } from './signals.js';
 import type { ExecutionEvent, QueueSignal } from './types.js';
 
 export type CommandExecutionRequest = {
@@ -222,14 +226,4 @@ function commandEvidence(result: CommandExecutionResult): string {
   const evidence = [result.stderr, result.stdout, result.command].filter(Boolean).join('\n');
   const trimmed = evidence.trim().replace(/\s+/g, ' ');
   return trimmed.length > 200 ? `${trimmed.slice(0, 197)}...` : trimmed;
-}
-
-function pushUniqueSignal(signals: QueueSignal[], signal: QueueSignal): void {
-  const exists = signals.some(existing =>
-    existing.kind === signal.kind
-    && existing.workItemId === signal.workItemId
-    && existing.targetItemId === signal.targetItemId
-  );
-
-  if (!exists) signals.push(signal);
 }
