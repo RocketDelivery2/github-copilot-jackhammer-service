@@ -36,7 +36,8 @@
     "repo:metadata": "bash scripts/set-repo-metadata.sh",
     "discussion:writer": "node --import tsx src/discussion-writer-cli.ts",
     "reviewer:best-practices": "node --import tsx src/best-practices-reviewer-cli.ts",
-    "provider:test": "tsx src/cli/provider-test.ts"
+    "provider:test": "tsx src/cli/provider-test.ts",
+    "knights:round-one": "tsx src/cli/knights-round-one.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
