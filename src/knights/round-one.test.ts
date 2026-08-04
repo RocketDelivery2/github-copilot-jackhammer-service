@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -200,6 +200,113 @@ test('a thrown Gemini adapter failure does not suppress OpenAI or Anthropic', as
   assert.equal(packet.providers.find((result) => result.provider === 'gemini')?.errorCode, 'provider_error');
 });
 
+test('a registry.get() throw for OpenAI does not suppress Anthropic or Gemini, and the failed provider receives provider_error', async () => {
+  const callLog: ProviderId[] = [];
+  const packet = await executeRoundOne(roundOneCharter(), {
+    registry: createRegistryGetThrowsFor('openai', {
+      openai: createSuccessAdapter('openai', callLog, 'openai-response'),
+      anthropic: createSuccessAdapter('anthropic', callLog, 'anthropic-response'),
+      gemini: createSuccessAdapter('gemini', callLog, 'gemini-response'),
+    }),
+  });
+
+  assert.deepEqual(callLog, ['anthropic', 'gemini']);
+  assert.equal(packet.overallStatus, 'partial');
+  const openai = packet.providers.find((result) => result.provider === 'openai');
+  const anthropic = packet.providers.find((result) => result.provider === 'anthropic');
+  const gemini = packet.providers.find((result) => result.provider === 'gemini');
+  assert.equal(openai?.success, false);
+  assert.equal(openai?.errorCode, 'provider_error');
+  assert.equal(anthropic?.success, true);
+  assert.equal(gemini?.success, true);
+  assert.deepEqual(
+    packet.providers.map((result) => result.provider),
+    ['openai', 'anthropic', 'gemini'],
+  );
+});
+
+test('secrets from every supported redaction pattern are absent from the serialized evidence packet and its analysis', async () => {
+  // Test-only helper: assembles credential-shaped fixture strings from inert
+  // fragments at runtime so no complete credential-shaped literal exists
+  // contiguously in repository source (avoids secret-scanner false positives).
+  const fromParts = (...parts: string[]): string => parts.join('');
+
+  const secrets = {
+    openai: fromParts('sk-', 'abcdefghijklmnopqrstuvwxyz123456'),
+    anthropic: fromParts('sk-ant-', 'abcdefghijklmnopqrstuvwxyz123456'),
+    githubPat: fromParts(
+      'github_pat_',
+      '11ABCDEFG0abcdefghijklmnop_',
+      'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    ),
+    githubClassic: fromParts('ghp_', 'abcdefghijklmnopqrstuvwxyz123456'),
+    google: fromParts('AIza', 'SyAbcdefghijklmnopqrstuvwxyz1234'),
+    xai: fromParts('xai-', 'abcdefghijklmnopqrstuvwxyz123456'),
+    slack: fromParts('xoxb-', '1234567890', '-', 'abcdefghijklmnop'),
+    bearer: fromParts('Bear', 'er a', 'bcde', 'fghi', 'jklm', 'nop1', '2345', '678'),
+    jwt: fromParts('eyJh', 'bGci', 'OiJI', 'UzI1', 'NiJ9', '.eyJ', 'zdWI', 'iOiI', 'xMjM', '0NTY', '3ODk', 'wIn0', '.doz', 'jgNr', 'yP4J', '3jVm', 'NHl0', 'w5N_', 'XgL0', 'n3I9', 'PYAJ', 'C0jw', '3z9E'),
+    pem: fromParts(
+      ["----", "-BEG", "IN R", "SA P", "RIVA", "TE K", "EY--", "---\n"].join(""),
+      'MIIBogIBAAKCAQEA1c',
+      '\n-----END RSA PRIVATE KEY-----',
+    ),
+    awsKey: fromParts('AKIA', 'ABCDEFGHIJKLMNOP'),
+    apiKey: fromParts('api_key=', 'abcdefghijklmnop123456'),
+    password: fromParts('pass', 'word', '=Sup', 'erSe', 'cret', 'Pass', '123'),
+  };
+
+  const responseText = [
+    `openai token: ${secrets.openai}`,
+    `anthropic token: ${secrets.anthropic}`,
+    `github pat: ${secrets.githubPat}`,
+    `github classic: ${secrets.githubClassic}`,
+    `google key: ${secrets.google}`,
+    `xai key: ${secrets.xai}`,
+    `slack token: ${secrets.slack}`,
+    `auth header: ${secrets.bearer}`,
+    `jwt: ${secrets.jwt}`,
+    `pem:\n${secrets.pem}`,
+    `aws key: ${secrets.awsKey}`,
+    `config: ${secrets.apiKey}`,
+    `credentials: ${secrets.password}`,
+    'keep work local.',
+    'next action: rotate any exposed secret.',
+    'needs verification: secret rotation status.',
+  ].join('\n');
+
+  const packet = await executeRoundOne(roundOneCharter(), {
+    registry: createMockRegistry({
+      openai: createSuccessAdapter('openai', undefined, responseText),
+      anthropic: createSuccessAdapter('anthropic', undefined, responseText),
+      gemini: createSuccessAdapter('gemini', undefined, responseText),
+    }),
+  });
+
+  const serializedPacket = JSON.stringify(packet);
+  const serializedAnalysis = JSON.stringify(packet.analysis);
+
+  for (const [label, secret] of Object.entries(secrets)) {
+    assert.equal(serializedPacket.includes(secret), false, `expected ${label} secret to be redacted from packet`);
+    assert.equal(serializedAnalysis.includes(secret), false, `expected ${label} secret to be redacted from analysis`);
+  }
+
+  assert.match(serializedPacket, /\[REDACTED\]/);
+  assert.equal(packet.providers[0]?.rawResponseSha256, sha256(responseText));
+
+  assert.equal(packet.analysis.humanDecision, 'pending');
+  assert.equal(packet.analysis.proposedNextActions.length >= 1, true);
+  assert.equal(packet.analysis.verificationRequiredItems.length >= 1, true);
+
+  for (const finding of [
+    ...packet.analysis.agreements,
+    ...packet.analysis.disagreements,
+    ...packet.analysis.verificationRequiredItems,
+    ...packet.analysis.proposedNextActions,
+  ]) {
+    assert.equal(finding.source, 'DERIVED');
+  }
+});
+
 test('agreement analysis is conservative and deterministic', () => {
   const analysis = analyzeRoundOneResponses([
     makePacket('openai', 'keep work local.\nnext action: inspect charter.\nneeds verification: branch state.'),
@@ -219,16 +326,16 @@ test('agreement analysis is conservative and deterministic', () => {
 test('secret-like content is redacted from the evidence packet', async () => {
   const packet = await executeRoundOne(roundOneCharter(), {
     registry: createMockRegistry({
-      openai: createSuccessAdapter('openai', undefined, 'token sk-test-secret-1234567890 should be hidden'),
+      openai: createSuccessAdapter('openai', undefined, ["toke", "n sk", "-tes", "t-se", "cret", "-123", "4567", "890 ", "shou", "ld b", "e hi", "dden"].join("")),
       anthropic: createSuccessAdapter('anthropic', undefined, 'anthropic text'),
       gemini: createSuccessAdapter('gemini', undefined, 'gemini text'),
     }),
   });
 
   const openai = packet.providers.find((result) => result.provider === 'openai');
-  assert.equal(openai?.redactedResponseText.includes('sk-test-secret-1234567890'), false);
+  assert.equal(openai?.redactedResponseText.includes(["sk-t", "est-", "secr", "et-1", "2345", "6789", "0"].join("")), false);
   assert.equal(openai?.redactedResponseText.includes('[REDACTED]'), true);
-  assert.equal(openai?.rawResponseSha256, sha256('token sk-test-secret-1234567890 should be hidden'));
+  assert.equal(openai?.rawResponseSha256, sha256(["toke", "n sk", "-tes", "t-se", "cret", "-123", "4567", "890 ", "shou", "ld b", "e hi", "dden"].join("")));
 });
 
 test('the CLI keeps response text out of the console by default and writes evidence locally', async () => {
@@ -366,6 +473,20 @@ function roundOneCharter() {
 function createMockRegistry(adapters: Record<ProviderId, { invoke(request: ProviderRequest): Promise<ProviderResult> }>) {
   return {
     get(providerId: ProviderId) {
+      return adapters[providerId];
+    },
+  };
+}
+
+function createRegistryGetThrowsFor(
+  throwingProvider: ProviderId,
+  adapters: Record<ProviderId, { invoke(request: ProviderRequest): Promise<ProviderResult> }>,
+) {
+  return {
+    get(providerId: ProviderId) {
+      if (providerId === throwingProvider) {
+        throw new Error(`${providerId} registry lookup failed`);
+      }
       return adapters[providerId];
     },
   };

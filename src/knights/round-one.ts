@@ -95,10 +95,10 @@ async function invokeProvider(
   packet: RoundOneProviderPacketResult;
   analysisInput: RoundOneAnalysisInput;
 }> {
-  const adapter = registry.get(provider);
   let result: ProviderResult;
 
   try {
+    const adapter = registry.get(provider);
     result = await adapter.invoke({
       prompt: buildRoundOnePrompt(charter, provider),
       model: charter.providers[provider].model,
@@ -121,24 +121,30 @@ async function invokeProvider(
     };
   }
 
-  const packet = normalizeProviderPacketResult(result);
+  const rawResponseSha256 = createHash('sha256').update(result.text, 'utf8').digest('hex');
+  const redactedResponseText = redactSensitiveText(result.text);
+  const packet = normalizeProviderPacketResult(result, redactedResponseText, rawResponseSha256);
   return {
     packet,
     analysisInput: {
       provider: packet.provider,
       success: packet.success,
-      responseText: result.text,
+      responseText: redactedResponseText,
     },
   };
 }
 
-function normalizeProviderPacketResult(result: ProviderResult): RoundOneProviderPacketResult {
+function normalizeProviderPacketResult(
+  result: ProviderResult,
+  redactedResponseText: string,
+  rawResponseSha256: string,
+): RoundOneProviderPacketResult {
   return {
     provider: result.provider,
     model: result.model,
     success: result.success,
-    redactedResponseText: redactSensitiveText(result.text),
-    rawResponseSha256: createHash('sha256').update(result.text, 'utf8').digest('hex'),
+    redactedResponseText,
+    rawResponseSha256,
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,
     totalTokens: result.totalTokens,
@@ -150,10 +156,32 @@ function normalizeProviderPacketResult(result: ProviderResult): RoundOneProvider
 
 function redactSensitiveText(text: string): string {
   return text
+    // OpenAI
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+    // Anthropic
+    .replace(/\bsk-ant-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+    // GitHub classic/fine-grained tokens
     .replace(/\bgh[pousr]_[A-Za-z0-9]{8,}\b/g, '[REDACTED]')
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{8,}\b/g, '[REDACTED]')
+    // Google
     .replace(/\bAIza[0-9A-Za-z_-]{8,}\b/g, '[REDACTED]')
-    .replace(/\b(?:xox[pbar]-[A-Za-z0-9-]+)\b/g, '[REDACTED]');
+    // xAI
+    .replace(/\bxai-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+    // Slack
+    .replace(/\bxox[pbar]-[A-Za-z0-9-]+\b/g, '[REDACTED]')
+    // Authorization / Bearer header values
+    .replace(/\b(Authorization|Bearer)\s*[:=]?\s*[A-Za-z0-9._-]{8,}/gi, '$1 [REDACTED]')
+    // JWT-like three-segment tokens
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED]')
+    // PEM private key blocks
+    .replace(/-----BEGIN[^-]+PRIVATE KEY-----[\s\S]*?-----END[^-]+PRIVATE KEY-----/g, '[REDACTED]')
+    // AWS access key identifiers
+    .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED]')
+    // common key/value forms (api_key, apiKey, token, secret, client_secret, access_key, password)
+    .replace(
+      /\b(api[_-]?key|token|secret|client[_-]?secret|access[_-]?key|password)\b\s*[:=]\s*["']?[A-Za-z0-9._-]{6,}["']?/gi,
+      '$1=[REDACTED]',
+    );
 }
 
 function normalizeErrorCode(error: unknown): ProviderResult['errorCode'] {
