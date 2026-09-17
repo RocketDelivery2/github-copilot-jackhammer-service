@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
-    "@google/genai": "^2.15.0",
+    "@google/genai": "^2.22.0",
     "@octokit/rest": "^21.1.1",
     "dotenv": "^16.4.7",
     "ignore": "^6.0.2",
