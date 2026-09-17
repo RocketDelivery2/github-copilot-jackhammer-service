@@ -54,7 +54,7 @@ backlog:
       - "Run npm run lint to see the resulting type errors"
       - "Fix or suppress (with // @ts-expect-error) any errors blocking the build"
     safe: false
-    enabled: true
+    enabled: false
 
   - id: extract-constants
     priority: 3
@@ -162,7 +162,7 @@ backlog:
     tasks:
       - "Create .editorconfig with: root=true, indent_style=space, indent_size=2, end_of_line=lf, charset=utf-8, trim_trailing_whitespace=true, insert_final_newline=true"
     safe: true
-    enabled: true
+    enabled: false
 
   - id: dependabot-config
     priority: 10
@@ -177,4 +177,4 @@ backlog:
       - "Check for .github/dependabot.yml"
       - "If absent, create it with package-ecosystem: npm, directory: /, schedule: weekly"
     safe: false
-    enabled: true
+    enabled: false
