@@ -1,9 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
-import { PROVIDER_LIMITS } from '../providers/types.js';
+import { PROVIDER_LIMITS, type ProviderId } from '../providers/types.js';
+import { buildRoundOnePrompt } from './round-one.js';
 
 const boundedText = (maxLength: number) =>
   z.string().trim().min(1).max(maxLength);
+
+const PROVIDER_ORDER: readonly ProviderId[] = ['openai', 'anthropic', 'gemini'];
 
 export const TaskCharterInputSchema = z.object({
   id: boundedText(128),
@@ -63,6 +66,15 @@ export function resolveTaskCharterRuntime(
       gemini: { model: models.geminiModel },
     },
   });
+
+  for (const provider of PROVIDER_ORDER) {
+    const renderedPrompt = buildRoundOnePrompt(runtime, provider);
+    if (renderedPrompt.length > PROVIDER_LIMITS.maxPromptLength) {
+      throw new Error(
+        `Rendered prompt for ${provider} must be ${PROVIDER_LIMITS.maxPromptLength} characters or fewer.`,
+      );
+    }
+  }
 
   return runtime;
 }

@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { providerRegistry } from '../providers/registry.js';
 import { resolveTaskCharterRuntime, type TaskCharterInput } from '../knights/task-charter.js';
@@ -24,8 +25,22 @@ export interface KnightsRoundOneCliDependencies {
   writeFile?: typeof writeFile;
   mkdir?: typeof mkdir;
   stat?: typeof stat;
+  rename?: typeof rename;
+  rm?: typeof rm;
   writeStdout?: (text: string) => void;
   writeStderr?: (text: string) => void;
+}
+
+interface EvidenceReservation {
+  finalize(serializedPacket: string): Promise<void>;
+  cleanup(): Promise<void>;
+}
+
+class EvidenceFileExistsError extends Error {
+  constructor(readonly outputPath: string) {
+    super(`Evidence file already exists: ${outputPath}`);
+    this.name = 'EvidenceFileExistsError';
+  }
 }
 
 export function parseKnightsRoundOneArgs(argv: readonly string[]): KnightsRoundOneCliOptions {
@@ -148,6 +163,8 @@ export async function runKnightsRoundOneCli(
   const writeFileImpl = dependencies.writeFile ?? writeFile;
   const mkdirImpl = dependencies.mkdir ?? mkdir;
   const statImpl = dependencies.stat ?? stat;
+  const renameImpl = dependencies.rename ?? rename;
+  const rmImpl = dependencies.rm ?? rm;
   const registry = dependencies.registry ?? providerRegistry;
 
   let options: KnightsRoundOneCliOptions;
@@ -186,26 +203,41 @@ export async function runKnightsRoundOneCli(
   }
 
   const outputPath = path.resolve(options.evidenceOutput);
-  if (!options.overwrite) {
-    try {
-      await statImpl(outputPath);
-      writeStderr(`Evidence file already exists: ${outputPath}\n`);
+  let reservation: EvidenceReservation;
+  try {
+    reservation = await reserveEvidenceOutput(
+      outputPath,
+      options.overwrite,
+      {
+        mkdir: mkdirImpl,
+        stat: statImpl,
+        writeFile: writeFileImpl,
+        rename: renameImpl,
+        rm: rmImpl,
+      },
+    );
+  } catch (error) {
+    if (error instanceof EvidenceFileExistsError) {
+      writeStderr(`${error.message}\n`);
       return 2;
-    } catch (error) {
-      if (!isMissingFileError(error)) {
-        writeStderr(`${formatCliError(error)}\n`);
-        return 1;
-      }
     }
+
+    writeStderr(`${formatCliError(error)}\n`);
+    return 1;
   }
 
-  const packet = await executeRoundOne(charterRuntime, { registry });
-  const serializedPacket = `${JSON.stringify(packet, null, 2)}\n`;
-
+  let packet: RoundOneEvidencePacket;
   try {
-    await mkdirImpl(path.dirname(outputPath), { recursive: true });
-    await writeFileImpl(outputPath, serializedPacket, { encoding: 'utf8', flag: options.overwrite ? 'w' : 'wx' });
+    packet = await executeRoundOne(charterRuntime, { registry });
+    const serializedPacket = `${JSON.stringify(packet, null, 2)}\n`;
+    await reservation.finalize(serializedPacket);
   } catch (error) {
+    try {
+      await reservation.cleanup();
+    } catch {
+      // Preserve the original execution/finalization error as the primary CLI failure.
+    }
+
     writeStderr(`${formatCliError(error)}\n`);
     return 1;
   }
@@ -241,6 +273,63 @@ export function formatCliSummary(packet: RoundOneEvidencePacket, includeResponse
       verificationRequiredItems: packet.analysis.verificationRequiredItems.length,
       proposedNextActions: packet.analysis.proposedNextActions.length,
       humanDecision: packet.analysis.humanDecision,
+    },
+  };
+}
+
+async function reserveEvidenceOutput(
+  outputPath: string,
+  overwrite: boolean,
+  dependencies: Pick<Required<KnightsRoundOneCliDependencies>, 'mkdir' | 'stat' | 'writeFile' | 'rename' | 'rm'>,
+): Promise<EvidenceReservation> {
+  await dependencies.mkdir(path.dirname(outputPath), { recursive: true });
+
+  if (!overwrite) {
+    try {
+      await dependencies.stat(outputPath);
+      throw new EvidenceFileExistsError(outputPath);
+    } catch (error) {
+      if (error instanceof EvidenceFileExistsError) {
+        throw error;
+      }
+      if (!isMissingFileError(error)) {
+        throw error;
+      }
+    }
+
+    try {
+      await dependencies.writeFile(outputPath, '', { encoding: 'utf8', flag: 'wx' });
+    } catch (error) {
+      if (isAlreadyExistsError(error)) {
+        throw new EvidenceFileExistsError(outputPath);
+      }
+      throw error;
+    }
+
+    return {
+      async finalize(serializedPacket: string): Promise<void> {
+        await dependencies.writeFile(outputPath, serializedPacket, { encoding: 'utf8', flag: 'w' });
+      },
+      async cleanup(): Promise<void> {
+        await dependencies.rm(outputPath, { force: true });
+      },
+    };
+  }
+
+  const temporaryPath = path.join(
+    path.dirname(outputPath),
+    `.${path.basename(outputPath)}.${randomUUID()}.tmp`,
+  );
+
+  await dependencies.writeFile(temporaryPath, '', { encoding: 'utf8', flag: 'wx' });
+
+  return {
+    async finalize(serializedPacket: string): Promise<void> {
+      await dependencies.writeFile(temporaryPath, serializedPacket, { encoding: 'utf8', flag: 'w' });
+      await dependencies.rename(temporaryPath, outputPath);
+    },
+    async cleanup(): Promise<void> {
+      await dependencies.rm(temporaryPath, { force: true });
     },
   };
 }
@@ -287,6 +376,12 @@ function isMissingFileError(error: unknown): boolean {
   return Boolean(error)
     && typeof error === 'object'
     && Reflect.get(error as object, 'code') === 'ENOENT';
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return Boolean(error)
+    && typeof error === 'object'
+    && Reflect.get(error as object, 'code') === 'EEXIST';
 }
 
 function isDirectExecution(): boolean {
