@@ -19,6 +19,12 @@ const FAILURE_SIGNAL_KINDS = new Set<QueueSignalKind>([
   'lint_failure',
 ]);
 
+const SIGNAL_SCORE_ADJUSTMENTS = {
+  urgent: 1200,
+  blocker: -2500,
+  failureFix: 2000,
+} as const;
+
 export function rebalanceWorkItems(
   workItems: readonly WorkItem[],
   events: readonly ExecutionEvent[] = [],
@@ -84,9 +90,9 @@ export function scoreWorkItem(
   } else {
     for (const signal of signals) {
       const targetId = signal.targetItemId ?? signal.workItemId;
-      if (signal.kind === 'urgent' && targetId === item.id) score += 1200;
-      if (signal.kind === 'blocker' && targetId === item.id) score -= 2500;
-      if (FAILURE_SIGNAL_KINDS.has(signal.kind) && item.id === failureFixId(signal)) score += 2000;
+      if (signal.kind === 'urgent' && targetId === item.id) score += SIGNAL_SCORE_ADJUSTMENTS.urgent;
+      if (signal.kind === 'blocker' && targetId === item.id) score += SIGNAL_SCORE_ADJUSTMENTS.blocker;
+      if (FAILURE_SIGNAL_KINDS.has(signal.kind) && item.id === failureFixId(signal)) score += SIGNAL_SCORE_ADJUSTMENTS.failureFix;
     }
   }
 
@@ -199,11 +205,11 @@ function buildSignalAdjustments(signals: readonly QueueSignal[]): {
 
   for (const signal of signals) {
     const targetId = signal.targetItemId ?? signal.workItemId;
-    if (signal.kind === 'urgent' && targetId) addSignalAdjustment(signalAdjustments, targetId, 1200);
-    if (signal.kind === 'blocker' && targetId) addSignalAdjustment(signalAdjustments, targetId, -2500);
+    if (signal.kind === 'urgent' && targetId) addSignalAdjustment(signalAdjustments, targetId, SIGNAL_SCORE_ADJUSTMENTS.urgent);
+    if (signal.kind === 'blocker' && targetId) addSignalAdjustment(signalAdjustments, targetId, SIGNAL_SCORE_ADJUSTMENTS.blocker);
     if (FAILURE_SIGNAL_KINDS.has(signal.kind)) {
       hasActiveFailure = true;
-      addSignalAdjustment(signalAdjustments, failureFixId(signal), 2000);
+      addSignalAdjustment(signalAdjustments, failureFixId(signal), SIGNAL_SCORE_ADJUSTMENTS.failureFix);
     }
   }
 
