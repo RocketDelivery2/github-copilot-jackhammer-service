@@ -51,7 +51,7 @@ export async function createTasks(
     maxTasksPerRun: config.MAX_TASKS_PER_RUN,
   });
 
-  const content: any[] = [{ type: 'input_text', text: inputText }];
+  const content: OpenAI.Responses.ResponseInputContent[] = [{ type: 'input_text', text: inputText }];
   // Uploading the repo zip gives OpenAI an audit artifact. The model may not fully expand every zip in-context,
   // so the text snapshot above remains the source of truth for task creation.
   if (zipPath && fs.existsSync(zipPath)) {
