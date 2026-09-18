@@ -40,28 +40,28 @@ test("CodexReviewerPromptLoader returns prompt metadata by id", () => {
   }
 });
 
-test("CodexReviewerPromptLoader throws for unknown prompt id", () => {
+test("CodexReviewerPromptLoader throws for unknown prompt id", async () => {
   const loader = new CodexReviewerPromptLoader();
 
   assert.throws(() => loader.getPromptInfo("__missing__"), /Unknown prompt id/);
   assert.throws(() => loader.getPromptPath("__missing__"), /Unknown prompt id/);
-  assert.throws(() => loader.loadPrompt("__missing__"), /Unknown prompt id/);
+  await assert.rejects(() => loader.loadPrompt("__missing__"), /Unknown prompt id/);
 });
 
-test("CodexReviewerPromptLoader loads all known prompt files", () => {
+test("CodexReviewerPromptLoader loads all known prompt files", async () => {
   const loader = new CodexReviewerPromptLoader();
 
   for (const item of codexReviewerPromptInventory) {
     assert.ok(existsSync(item.repoPath), `Expected prompt file to exist: ${item.repoPath}`);
 
-    const content = loader.loadPrompt(item.id);
+    const content = await loader.loadPrompt(item.id);
 
     assert.equal(typeof content, "string");
     assert.ok(content.trim().length > 0, `Expected prompt file to have content: ${item.repoPath}`);
   }
 });
 
-test("CodexReviewerPromptLoader throws when a known prompt file is missing", () => {
+test("CodexReviewerPromptLoader throws when a known prompt file is missing", async () => {
   const first = codexReviewerPromptInventory[0];
   assert.ok(first, "Expected at least one prompt in inventory");
 
@@ -73,5 +73,5 @@ test("CodexReviewerPromptLoader throws when a known prompt file is missing", () 
 
   const loader = new CodexReviewerPromptLoader([missingPrompt]);
 
-  assert.throws(() => loader.loadPrompt("__missing_file__"), /Prompt file not found/);
+  await assert.rejects(() => loader.loadPrompt("__missing_file__"), /Prompt file not found/);
 });

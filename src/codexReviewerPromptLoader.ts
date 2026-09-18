@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import {
   codexReviewerPromptInventory,
   reviewerPromptFilenames,
@@ -45,14 +45,23 @@ export class CodexReviewerPromptLoader {
     return this.getPromptInfo(id).repoPath;
   }
 
-  public loadPrompt(id: string): string {
+  public async loadPrompt(id: string): Promise<string> {
     const promptPath = this.getPromptPath(id);
 
-    if (!existsSync(promptPath)) {
-      throw new Error(`Prompt file not found: ${promptPath}`);
-    }
+    try {
+      return await readFile(promptPath, "utf8");
+    } catch (error: unknown) {
+      if (
+        typeof error === "object"
+        && error !== null
+        && "code" in error
+        && error.code === "ENOENT"
+      ) {
+        throw new Error(`Prompt file not found: ${promptPath}`);
+      }
 
-    return readFileSync(promptPath, "utf8");
+      throw error;
+    }
   }
 }
 
