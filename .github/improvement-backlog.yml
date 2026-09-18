@@ -87,7 +87,7 @@ backlog:
       - "For each occurrence, replace with the async equivalent wrapped in async function"
       - "Run npm test && npm run lint to validate"
     safe: false
-    enabled: true
+    enabled: false
 
   - id: reduce-any-types
     priority: 5
