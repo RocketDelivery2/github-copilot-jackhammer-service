@@ -103,7 +103,7 @@ backlog:
       - "For each occurrence, propose a narrower type or unknown with a type guard"
       - "Run npm run lint to confirm no new type errors"
     safe: false
-    enabled: true
+    enabled: false
 
   - id: add-missing-tests
     priority: 6
