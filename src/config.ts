@@ -26,7 +26,7 @@ const ConfigSchema = z.object({
   MAX_CONTEXT_BYTES: z.coerce.number().int().positive().default(450000),
   QUEUE_DIR: z.string().default('.ai/jackhammer-queue'),
   STATE_FILE: z.string().default('.ai/state.json'),
-  DRY_RUN: boolish.default(''),
+  DRY_RUN: boolish.default('true'),
   COPILOT_ASSIGNEE: z.string().optional().default(''),
   ISSUE_LABELS: z.string().default('ai-task,jackhammer-queue'),
   FULL_AUTOPILOT: boolish.default(''),
