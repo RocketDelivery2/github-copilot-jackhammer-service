@@ -7,9 +7,9 @@ Follow these steps in order to finish setting up and safely run JackHammer.
 ## Step 0 — Pull latest JackHammer main locally
 
 ```powershell
-cd C:\Users\codin\source\repos\github-copilot-jackhammer-service
+Set-Location <path-to-your-clone>\github-copilot-jackhammer-service
 git pull origin main
-npm install
+npm ci
 npm test
 npm run build
 npm run lint
@@ -99,7 +99,7 @@ Review the output carefully before proceeding.
 
 ---
 
-## Step 5 — Create one real TeamBuilder queue issue
+## Step 5 — Create one real queue issue in the configured target repository
 
 Once the dry run output looks correct:
 
@@ -107,7 +107,7 @@ Once the dry run output looks correct:
 $env:DRY_RUN="false"; $env:RUN_ONCE="true"; npm run dev
 ```
 
-This creates exactly **one** real GitHub issue in the configured target repo.
+This creates exactly **one** real GitHub issue in the repository selected by `GITHUB_OWNER` and `GITHUB_REPO`. The defaults target the JackHammer repository; override them explicitly when servicing another repository.
 
 Verify the issue was created correctly before continuing.
 

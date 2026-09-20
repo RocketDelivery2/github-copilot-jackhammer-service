@@ -67,9 +67,11 @@
 
 ---
 
-## 3. TeamBuilder (serviced repo) — GitHub settings
+## 3. Optional serviced target repo — GitHub settings
 
-Target repo: `RocketDelivery2/TeamBuilder`
+By default, JackHammer targets `RocketDelivery2/github-copilot-jackhammer-service`, matching `src/config.ts`, the README, and `.env.example`.
+
+To service a different repository, set `GITHUB_OWNER`, `GITHUB_REPO`, and `REPO_URL` explicitly. For example, a TeamBuilder deployment would target `RocketDelivery2/TeamBuilder`.
 
 ### Settings → General → Features
 
@@ -129,7 +131,7 @@ Target repo: `RocketDelivery2/TeamBuilder`
 
 ## 4. GitHub token permissions
 
-Create a fine-grained PAT scoped to `RocketDelivery2/TeamBuilder`:
+Create a fine-grained PAT scoped to the configured target repository (for example, `RocketDelivery2/TeamBuilder` when TeamBuilder is the serviced repo):
 
 | Permission | Level |
 |---|---|
@@ -146,13 +148,15 @@ Create a fine-grained PAT scoped to `RocketDelivery2/TeamBuilder`:
 
 ## 5. Finding the Copilot assignee login
 
-1. Open `RocketDelivery2/TeamBuilder` → Issues → create a temporary test issue.
+1. Open the configured target repository → Issues → create a temporary test issue.
 2. Manually assign **Copilot** to that issue in the GitHub UI.
-3. Run:
+3. Run, replacing the repository value with the configured target:
 
 ```bash
-gh issue view <issue-number> --repo RocketDelivery2/TeamBuilder --json assignees
+gh issue view <issue-number> --repo RocketDelivery2/github-copilot-jackhammer-service --json assignees
 ```
+
+If JackHammer is servicing another repository such as TeamBuilder, use that repository instead.
 
 4. Copy the `login` value into your `.env`:
 
@@ -187,8 +191,8 @@ All three must pass before enabling full autopilot.
 | `JackHammer.OpenAI.Model` | `gpt-5.2` |
 | `JackHammer.GitHub.Token` | **Sensitive** |
 | `JackHammer.GitHub.Owner` | `RocketDelivery2` |
-| `JackHammer.GitHub.Repo` | `TeamBuilder` |
-| `JackHammer.GitHub.RepoUrl` | `https://github.com/RocketDelivery2/TeamBuilder.git` |
+| `JackHammer.GitHub.Repo` | `github-copilot-jackhammer-service` by default; override with the serviced repo |
+| `JackHammer.GitHub.RepoUrl` | `https://github.com/RocketDelivery2/github-copilot-jackhammer-service.git` by default; override with the serviced repo URL |
 | `JackHammer.GitHub.BaseBranch` | `main` |
 | `JackHammer.Copilot.Assignee` | `<exact-copilot-agent-login>` |
 | `JackHammer.FullAutopilot` | `true` |
