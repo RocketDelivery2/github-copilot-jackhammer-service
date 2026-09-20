@@ -129,7 +129,7 @@ MERGE_METHOD=squash
 
 ## GitHub token permissions
 
-Fine-grained PAT scoped to `RocketDelivery2/github-copilot-jackhammer-service`:
+Fine-grained PAT scoped to the configured target repository (the default is `RocketDelivery2/github-copilot-jackhammer-service`):
 
 | Permission | Level |
 |---|---|
@@ -146,9 +146,9 @@ Fine-grained PAT scoped to `RocketDelivery2/github-copilot-jackhammer-service`:
 
 ## Finding the Copilot assignee login
 
-1. Create a temporary issue in `RocketDelivery2/github-copilot-jackhammer-service`.
+1. Create a temporary issue in the repository selected by `GITHUB_OWNER` and `GITHUB_REPO`.
 2. Manually assign it to **Copilot** in the GitHub UI.
-3. Run:
+3. Run, replacing the repository value when JackHammer is servicing a different target:
 
 ```bash
 gh issue view <issue-number> --repo RocketDelivery2/github-copilot-jackhammer-service --json assignees
@@ -405,7 +405,7 @@ See the file for the full schema and sample entries.
 
 See [`docs/setup.md`](./docs/setup.md) for:
 - Full JackHammer repo GitHub settings
-- Full github-copilot-jackhammer-service (serviced repo) GitHub settings
+- GitHub settings for JackHammer and an optional configured serviced repository
 - Validation steps
 
 See [`docs/INDUSTRY_STANDARDS_BRAIN.md`](./docs/INDUSTRY_STANDARDS_BRAIN.md) for:
