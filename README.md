@@ -1,5 +1,7 @@
 # GitHub Copilot JackHammer Service
 
+[![CI](https://github.com/RocketDelivery2/github-copilot-jackhammer-service/actions/workflows/test-and-build.yml/badge.svg)](https://github.com/RocketDelivery2/github-copilot-jackhammer-service/actions/workflows/test-and-build.yml)
+
 > ⚠️ **Public repository.** Never commit `.env`, OpenAI keys, GitHub tokens, passwords, Copilot credentials, logs containing secrets, or Octopus sensitive values. Use Octopus sensitive variables or local environment variables for all secrets.
 
 **GitHub Copilot JackHammer Service** is a long-running repo automation service that uses OpenAI/ChatGPT to read a live codebase snapshot, generate or rebalance a prioritized Copilot command queue, and then drive GitHub Copilot coding agent end-to-end — from issue creation through PR approval, merge, branch deletion, and issue close.
@@ -52,7 +54,7 @@ These notes cover the expected failure modes for scheduled runs and the operatio
 ```bash
 cp .env.example .env
 # edit .env with your keys and repo details
-npm install
+npm ci
 npm run doctor
 npm run once
 npm run dev
@@ -64,7 +66,7 @@ npm run dev
 
 See [`docs/NEXT_STEPS.md`](./docs/NEXT_STEPS.md) for the full ordered workflow:
 
-1. Pull latest main and validate locally (`npm install`, `npm test`, `npm run build`, `npm run lint`)
+1. Pull latest main and validate locally (`npm ci`, `npm test`, `npm run build`, `npm run lint`)
 2. Apply repository About metadata (`npm run repo:metadata`)
 3. Add GitHub Actions CI (`.github/workflows/test-and-build.yml`)
 4. Configure branch protection after CI is green
@@ -307,7 +309,7 @@ If starting from a downloaded ZIP:
 cd "$env:USERPROFILE\Downloads"
 Expand-Archive .\github-copilot-jackhammer-service.zip -DestinationPath .\github-copilot-jackhammer-service -Force
 cd .\github-copilot-jackhammer-service
-npm install
+npm ci
 npm test
 npm run build
 npm run lint

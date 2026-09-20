@@ -7,7 +7,7 @@ Thank you for contributing! This document covers the project conventions, automa
 ## Development setup
 
 ```bash
-npm install
+npm ci
 npm test
 npm run build
 npm run lint
