@@ -19,6 +19,18 @@ Use this runbook when a scheduled or recurring JackHammer run does not complete 
 - **Copilot assignment failed:** the assignee login is missing or the cloud agent is unavailable.
 - **Repeated retries without progress:** the item likely needs manual intervention or a fresh repo snapshot.
 
+## Pull request workflow does not start
+
+If a pull request has **no `test-and-build` run at all**, do not treat the missing check as a pass.
+
+1. Confirm `.github/workflows/test-and-build.yml` exists on the default branch and still includes a `pull_request` trigger.
+2. In **Settings → Actions → General**, confirm GitHub Actions are enabled for the repository and that the repository is allowed to run the actions used by the workflow.
+3. Check the PR head SHA directly. A CodeQL or other security check does not substitute for the repository's `test-and-build` workflow.
+4. Confirm the PR is not draft-only or filtered out by a branch/event condition.
+5. After restoring Actions, update or rebase the PR so GitHub emits a fresh pull-request event and wait for `test-and-build` to complete.
+6. For dependency, runtime, workflow, `package.json`, or lockfile changes, require an actual successful `test-and-build` result before merging.
+
+If branch protection is also missing the required check, fix the repository rule rather than relying on the absence of enforcement. Never force-merge merely because GitHub currently reports the PR as mergeable.
 ## Recovery steps
 
 - Re-run in dry-run mode first if the failure path is unclear.
