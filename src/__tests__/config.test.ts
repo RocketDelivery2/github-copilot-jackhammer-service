@@ -2,7 +2,7 @@
 import { describe, it } from 'node:test';
 
 describe('config', () => {
-  it('defaults adaptive preview settings safely', async () => {
+  it('defaults safe-mode and adaptive preview settings safely', async () => {
     const previousOpenAiKey = process.env.OPENAI_API_KEY;
     const previousGithubToken = process.env.GITHUB_TOKEN;
 
@@ -22,6 +22,17 @@ describe('config', () => {
       });
 
       assert.equal(parsed.ADAPTIVE_QUEUE_ENABLED, false);
+      assert.equal(parsed.DRY_RUN, true);
+      assert.equal(parseConfig({
+        OPENAI_API_KEY: 'test-openai-key',
+        GITHUB_TOKEN: 'test-github-token',
+        DRY_RUN: 'false',
+      }).DRY_RUN, false);
+      assert.equal(parseConfig({
+        OPENAI_API_KEY: 'test-openai-key',
+        GITHUB_TOKEN: 'test-github-token',
+        DRY_RUN: 'true',
+      }).DRY_RUN, true);
       assert.equal(parsed.GITHUB_REPO, 'github-copilot-jackhammer-service');
       assert.equal(parsed.REPO_URL, 'https://github.com/RocketDelivery2/github-copilot-jackhammer-service.git');
       assert.equal(parsed.ADAPTIVE_EVENT_JOURNAL_PATH, '.ai/adaptive-preview-event-journal.json');
