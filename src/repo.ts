@@ -8,7 +8,7 @@ import type { RepoSnapshot, RepoFile } from './types.js';
 import type { AppConfig } from './config.js';
 
 const require = createRequire(import.meta.url);
-const ignoreFactory = require('ignore') as typeof import('ignore').default;
+const ignoreFactory = require('ignore') as () => Ignore;
 let configPromise: Promise<AppConfig> | undefined;
 
 async function getConfig(): Promise<AppConfig> {
