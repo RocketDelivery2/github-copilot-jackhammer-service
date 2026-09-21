@@ -165,16 +165,10 @@ export async function withTimeout<T>(
   const timeoutPromise = new Promise<T>((_, reject) => {
     rejectTimeout = reject;
   });
-  const timeoutHandle = setTimeout(() => controller.abort(timeoutError), timeoutMs);
-  if (typeof timeoutHandle.unref === 'function') {
-    timeoutHandle.unref();
-  }
-  const rejectHandle = setTimeout(() => {
+  const timeoutHandle = setTimeout(() => {
+    controller.abort(timeoutError);
     rejectTimeout?.(timeoutError);
   }, timeoutMs);
-  if (typeof rejectHandle.unref === 'function') {
-    rejectHandle.unref();
-  }
 
   try {
     return await Promise.race<T>([
@@ -183,7 +177,6 @@ export async function withTimeout<T>(
     ]);
   } finally {
     clearTimeout(timeoutHandle);
-    clearTimeout(rejectHandle);
   }
 }
 
