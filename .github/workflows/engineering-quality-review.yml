@@ -32,7 +32,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
@@ -45,7 +45,7 @@ jobs:
           npm run lint 2>&1 | tee /tmp/typecheck-output.txt
           TC_EXIT=${PIPESTATUS[0]}
           echo "exit_code=$TC_EXIT" >> $GITHUB_OUTPUT
-          TC_ERRORS=$(grep -c "error TS" /tmp/typecheck-output.txt 2>/dev/null || echo "0")
+          TC_ERRORS=$(grep -c "error TS" /tmp/typecheck-output.txt 2>/dev/null || true)
           echo "error_count=$TC_ERRORS" >> $GITHUB_OUTPUT
           set -e
 
