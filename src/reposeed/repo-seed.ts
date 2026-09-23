@@ -92,8 +92,14 @@ function requireRecord(input: unknown, name: string): Record<string, unknown> {
 
 function requireExactKeys(value: Record<string, unknown>, keys: readonly string[], name: string): void {
   const actual = Reflect.ownKeys(value);
-  if (actual.length !== keys.length || actual.some((key, index) => key !== keys[index])) {
-    throw new Error(`${name} contains missing, extra, or out-of-order properties`);
+  const hasUnexpectedKey = actual.some(
+    (key) => typeof key !== 'string' || !keys.includes(key),
+  );
+  const hasMissingKey = keys.some(
+    (key) => !Object.prototype.hasOwnProperty.call(value, key),
+  );
+  if (actual.length !== keys.length || hasUnexpectedKey || hasMissingKey) {
+    throw new Error(`${name} contains missing or extra properties`);
   }
 }
 

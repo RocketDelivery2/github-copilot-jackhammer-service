@@ -51,6 +51,20 @@ describe('RepoSeed core', () => {
     }
   });
 
+  it('accepts key order independently and rejects unknown properties', () => {
+    const reordered = {
+      seedSha256: vector.seedSha256,
+      treeSha: vector.treeSha,
+      commitSha: vector.commitSha,
+      objectFormat: vector.objectFormat,
+      repositoryId: vector.repositoryId,
+      host: vector.host,
+      schemaVersion: vector.schemaVersion,
+    };
+    assert.equal(verifyRepoSeedIntegrity(reordered), true);
+    assert.throws(() => createRepoSeed({ ...vector, unexpected: 'value' }));
+  });
+
   it('deeply freezes the validated artifact and detects corruption', () => {
     const seed = createRepoSeed(vector);
     assert.equal(Object.isFrozen(seed), true);
