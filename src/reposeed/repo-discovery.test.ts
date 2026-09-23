@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   parseGitHubRepositoryLocator,
+  repositoryIdentitiesEqual,
   repositoryLocatorsEqual,
   type GitHubRepositoryIdentity,
+  withRepositoryId,
 } from './repo-discovery.js';
 
 describe('RepoDiscovery identity helpers', () => {
@@ -27,6 +29,18 @@ describe('RepoDiscovery identity helpers', () => {
     const right = parseGitHubRepositoryLocator('https://github.com/owner/repo.git');
     assert.equal(repositoryLocatorsEqual(left, right), true);
     assert.equal(repositoryLocatorsEqual(left, { ...right, repository: 'other' }), false);
+  });
+
+  it('compares resolved identities only when both decimal IDs match', () => {
+    const locator = parseGitHubRepositoryLocator('https://github.com/owner/repo');
+    const left = withRepositoryId(locator, '111');
+    const right = withRepositoryId({ ...locator, owner: 'Owner' }, '111');
+    assert.equal(repositoryIdentitiesEqual(left, right), true);
+    assert.equal(repositoryIdentitiesEqual(left, { ...right, repositoryId: '222' }), false);
+    assert.equal(repositoryIdentitiesEqual(left, { ...right, repositoryId: undefined }), false);
+    assert.throws(() => withRepositoryId(locator, '01'));
+    assert.throws(() => withRepositoryId(locator, '0'));
+    assert.throws(() => withRepositoryId(locator, '1 '));
   });
 
   it('keeps repository IDs as decimal strings for later resolution', () => {
@@ -59,6 +73,25 @@ describe('RepoDiscovery identity helpers', () => {
       'https://github.com/owner/..',
       'https://github.com/owner/repo.git.git',
       'https://github.com/owner/%72epo',
+      'https://github.com/owner/repo/../other',
+      'https://github.com/a/b/../c',
+      'https://github.com/owner/./repo',
+    ]) {
+      assert.throws(() => parseGitHubRepositoryLocator(value));
+    }
+  });
+
+  it('rejects URL parser normalization and control-character inputs', () => {
+    for (const value of [
+      'https://github.com/owner/\trepo',
+      'https://github.com/owner/repo\n',
+      'https://github.com/owner/re\rpo',
+      '\u0000https://github.com/owner/repo',
+      'https://github.com/owner/repo\u0000',
+      'HTTPS://GITHUB.COM/owner/repo',
+      'https://github.com:443/owner/repo',
+      'https://github.com．/owner/repo',
+      'https://github.com\u00ad/owner/repo',
     ]) {
       assert.throws(() => parseGitHubRepositoryLocator(value));
     }

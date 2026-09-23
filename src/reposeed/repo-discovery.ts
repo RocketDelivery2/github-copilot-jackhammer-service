@@ -10,6 +10,7 @@ export interface GitHubRepositoryIdentity extends GitHubRepositoryLocator {
 }
 
 const COMPONENT = /^[A-Za-z0-9_.-]+$/;
+const REPOSITORY_ID = /^[1-9][0-9]*$/;
 
 export function parseGitHubRepositoryLocator(raw: string): GitHubRepositoryLocator {
   if (typeof raw !== 'string' || raw.length === 0 || raw !== raw.trim() || raw.includes('\\')) {
@@ -31,20 +32,32 @@ export function repositoryLocatorsEqual(
     && left.repository.toLowerCase() === right.repository.toLowerCase();
 }
 
-function parseHttpsLocator(raw: string): GitHubRepositoryLocator {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new Error('Repository locator must be a valid HTTPS URL');
+export function repositoryIdentitiesEqual(
+  left: GitHubRepositoryIdentity,
+  right: GitHubRepositoryIdentity,
+): boolean {
+  return repositoryLocatorsEqual(left, right)
+    && isRepositoryId(left.repositoryId)
+    && isRepositoryId(right.repositoryId)
+    && left.repositoryId === right.repositoryId;
+}
+
+export function withRepositoryId(
+  locator: GitHubRepositoryLocator,
+  repositoryId: string,
+): GitHubRepositoryIdentity {
+  if (!isRepositoryId(repositoryId)) {
+    throw new Error('repositoryId must be a positive decimal string');
   }
-  if (url.protocol !== 'https:' || url.hostname !== 'github.com'
-      || url.port !== '' || url.username !== '' || url.password !== ''
-      || url.search !== '' || url.hash !== '' || raw.includes('%')) {
+  return Object.freeze({ ...locator, repositoryId });
+}
+
+function parseHttpsLocator(raw: string): GitHubRepositoryLocator {
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(raw);
+  if (!match) {
     throw new Error('Repository locator must be a canonical GitHub HTTPS URL');
   }
-  const parts = url.pathname.split('/').slice(1);
-  return buildLocator(parts);
+  return buildLocator([match[1], match[2]]);
 }
 
 function parseScpLocator(raw: string): GitHubRepositoryLocator {
@@ -72,4 +85,8 @@ function buildLocator(parts: string[]): GitHubRepositoryLocator {
     throw new Error('Repository locator contains a malformed .git suffix');
   }
   return Object.freeze({ host: 'github.com', owner, repository });
+}
+
+function isRepositoryId(value: string | undefined): value is string {
+  return typeof value === 'string' && REPOSITORY_ID.test(value);
 }
