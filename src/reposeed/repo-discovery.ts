@@ -9,6 +9,9 @@ export interface GitHubRepositoryIdentity extends GitHubRepositoryLocator {
   readonly repositoryId?: string;
 }
 
+/** The authoritative part of an identity. Resolved identities and RepoSeeds both satisfy it. */
+export type GitHubRepositoryKey = Pick<GitHubRepositoryIdentity, 'host' | 'repositoryId'>;
+
 const COMPONENT = /^[A-Za-z0-9_.-]+$/;
 const REPOSITORY_ID = /^[1-9][0-9]*$/;
 
@@ -32,14 +35,19 @@ export function repositoryLocatorsEqual(
     && left.repository.toLowerCase() === right.repository.toLowerCase();
 }
 
+/**
+ * Identity comparison: the GitHub numeric repositoryId is authoritative and owner/repository are
+ * ignored, so a rename or transfer that keeps the ID is the same repository. false means "not
+ * proven the same" (unresolved, malformed, non-github.com, or a different ID), not "proven
+ * different". This module does not authenticate IDs: only compare IDs from an authenticated
+ * GitHub lookup or a verified RepoSeed.
+ */
 export function repositoryIdentitiesEqual(
-  left: GitHubRepositoryIdentity,
-  right: GitHubRepositoryIdentity,
+  left: GitHubRepositoryKey,
+  right: GitHubRepositoryKey,
 ): boolean {
-  return repositoryLocatorsEqual(left, right)
-    && isRepositoryId(left.repositoryId)
-    && isRepositoryId(right.repositoryId)
-    && left.repositoryId === right.repositoryId;
+  const leftId = resolvedRepositoryId(left);
+  return leftId !== undefined && leftId === resolvedRepositoryId(right);
 }
 
 export function withRepositoryId(
@@ -85,6 +93,12 @@ function buildLocator(parts: string[]): GitHubRepositoryLocator {
     throw new Error('Repository locator contains a malformed .git suffix');
   }
   return Object.freeze({ host: 'github.com', owner, repository });
+}
+
+/** Reads host and repositoryId once; undefined unless github.com with a canonical ID. */
+function resolvedRepositoryId(key: GitHubRepositoryKey): string | undefined {
+  const { host, repositoryId } = key;
+  return host === 'github.com' && isRepositoryId(repositoryId) ? repositoryId : undefined;
 }
 
 function isRepositoryId(value: string | undefined): value is string {
