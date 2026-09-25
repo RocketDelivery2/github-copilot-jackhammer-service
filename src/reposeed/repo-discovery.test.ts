@@ -6,9 +6,24 @@ import {
   repositoryLocatorsEqual,
   type GitHubRepositoryIdentity,
   type GitHubRepositoryKey,
+  type GitHubRepositoryLocator,
   withRepositoryId,
 } from './repo-discovery.js';
 import { createRepoSeed } from './repo-seed.js';
+
+function assertLocatorRejected(value: string, message: RegExp = /^Repository locator /): void {
+  assert.throws(
+    () => parseGitHubRepositoryLocator(value),
+    { name: 'Error', message },
+  );
+}
+
+function assertRepositoryIdRejected(locator: GitHubRepositoryLocator, repositoryId: string): void {
+  assert.throws(
+    () => withRepositoryId(locator, repositoryId),
+    { name: 'Error', message: /^repositoryId must be a positive decimal string$/ },
+  );
+}
 
 describe('RepoDiscovery identity helpers', () => {
   it('parses canonical HTTPS locators and strips one .git suffix', () => {
@@ -40,17 +55,20 @@ describe('RepoDiscovery identity helpers', () => {
     assert.equal(repositoryIdentitiesEqual(left, right), true);
     assert.equal(repositoryIdentitiesEqual(left, { ...right, repositoryId: '222' }), false);
     assert.equal(repositoryIdentitiesEqual(left, { ...right, repositoryId: undefined }), false);
-    assert.throws(() => withRepositoryId(locator, '01'));
-    assert.throws(() => withRepositoryId(locator, '0'));
-    assert.throws(() => withRepositoryId(locator, '1 '));
+    assertRepositoryIdRejected(locator, '01');
+    assertRepositoryIdRejected(locator, '0');
+    assertRepositoryIdRejected(locator, '1 ');
   });
 
-  it('keeps repository IDs as decimal strings for later resolution', () => {
-    const identity: GitHubRepositoryIdentity = {
-      ...parseGitHubRepositoryLocator('https://github.com/owner/repo'),
-      repositoryId: '12345678901234567890',
-    };
+  it('preserves exact repository IDs through the module and freezes outputs', () => {
+    const locator = parseGitHubRepositoryLocator('https://github.com/owner/repo');
+    const identity: GitHubRepositoryIdentity = withRepositoryId(
+      locator,
+      '12345678901234567890',
+    );
     assert.equal(identity.repositoryId, '12345678901234567890');
+    assert.equal(Object.isFrozen(locator), true);
+    assert.equal(Object.isFrozen(identity), true);
   });
 
   it('rejects non-canonical hosts, credentials, query, and fragment', () => {
@@ -62,7 +80,7 @@ describe('RepoDiscovery identity helpers', () => {
       'https://github.com/owner/repo?x=1',
       'https://github.com/owner/repo#part',
     ]) {
-      assert.throws(() => parseGitHubRepositoryLocator(value));
+      assertLocatorRejected(value);
     }
   });
 
@@ -79,7 +97,7 @@ describe('RepoDiscovery identity helpers', () => {
       'https://github.com/a/b/../c',
       'https://github.com/owner/./repo',
     ]) {
-      assert.throws(() => parseGitHubRepositoryLocator(value));
+      assertLocatorRejected(value);
     }
   });
 
@@ -95,7 +113,7 @@ describe('RepoDiscovery identity helpers', () => {
       'https://github.com．/owner/repo',
       'https://github.com\u00ad/owner/repo',
     ]) {
-      assert.throws(() => parseGitHubRepositoryLocator(value));
+      assertLocatorRejected(value);
     }
   });
 
@@ -110,7 +128,7 @@ describe('RepoDiscovery identity helpers', () => {
       'git@github.com:owner/repo.git.git',
       'git@github.com.evil.example:owner/repo',
     ]) {
-      assert.throws(() => parseGitHubRepositoryLocator(value));
+      assertLocatorRejected(value);
     }
   });
 
@@ -172,4 +190,73 @@ describe('RepoDiscovery identity helpers', () => {
     } as unknown as GitHubRepositoryKey;
     assert.equal(repositoryIdentitiesEqual(foreign, foreign), false);
   });
+
+  it('rejects scp lookalikes, anchor bypasses, and non-canonical components', () => {
+    for (const value of [
+      'git@evil.example:x/git@github.com:owner/repo',
+      'git@GITHUB.COM:owner/repo',
+      'git@github.com:owner/re po',
+      'git@github.com:owner/%repo',
+      'git@github.com:ownеr/repo',
+    ]) {
+      assertLocatorRejected(value);
+    }
+    assertLocatorRejected(
+      'https://github.com/../repo',
+      /^Repository locator contains an invalid owner or repository$/,
+    );
+    assertLocatorRejected(
+      'https://github.com/owner/...git',
+      /^Repository locator contains a malformed \.git suffix$/,
+    );
+  });
+
+  it('fails closed when locator comparison receives non-canonical runtime objects', () => {
+    const canonical = parseGitHubRepositoryLocator('https://github.com/kevin/repo');
+    const kelvin = {
+      host: 'github.com',
+      owner: '\u212Aevin',
+      repository: 'repo',
+    } as unknown as GitHubRepositoryLocator;
+    const foreign = {
+      host: 'evil.example',
+      owner: 'kevin',
+      repository: 'repo',
+    } as unknown as GitHubRepositoryLocator;
+    const missingOwner = {
+      host: 'github.com',
+      repository: 'repo',
+    } as unknown as GitHubRepositoryLocator;
+
+    assert.equal(repositoryLocatorsEqual(kelvin, canonical), false);
+    assert.equal(repositoryLocatorsEqual(foreign, canonical), false);
+    assert.equal(repositoryLocatorsEqual(missingOwner, canonical), false);
+  });
+
+  it('binds repository IDs only to canonical runtime locators', () => {
+    const canonical = parseGitHubRepositoryLocator('https://github.com/owner/repo');
+    const rebound = withRepositoryId({ ...canonical }, '111');
+    assert.deepEqual(rebound, {
+      host: 'github.com',
+      owner: 'owner',
+      repository: 'repo',
+      repositoryId: '111',
+    });
+
+    for (const locator of [
+      { host: 'evil.example', owner: 'owner', repository: 'repo' },
+      { host: 'github.com', owner: 'not/valid', repository: 'repo' },
+      { host: 'github.com', owner: 'owner', repository: '..' },
+      { host: 'github.com', owner: 'owner', repository: 'repo', evil: 'x' },
+    ]) {
+      assert.throws(
+        () => withRepositoryId(locator as unknown as GitHubRepositoryLocator, '111'),
+        {
+          name: 'Error',
+          message: /^Repository locator must be canonical github\.com owner\/repository$/,
+        },
+      );
+    }
+  });
+
 });

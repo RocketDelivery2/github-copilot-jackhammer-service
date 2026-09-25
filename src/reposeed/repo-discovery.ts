@@ -17,7 +17,7 @@ const REPOSITORY_ID = /^[1-9][0-9]*$/;
 
 export function parseGitHubRepositoryLocator(raw: string): GitHubRepositoryLocator {
   if (typeof raw !== 'string' || raw.length === 0 || raw !== raw.trim() || raw.includes('\\')) {
-    throw new Error('Repository locator must be a non-empty, untrimmed string');
+    throw new Error('Repository locator must be a non-empty trimmed string without backslashes');
   }
 
   if (raw.startsWith('git@')) {
@@ -30,9 +30,12 @@ export function repositoryLocatorsEqual(
   left: GitHubRepositoryLocator,
   right: GitHubRepositoryLocator,
 ): boolean {
-  return left.host === right.host
-    && left.owner.toLowerCase() === right.owner.toLowerCase()
-    && left.repository.toLowerCase() === right.repository.toLowerCase();
+  const leftLocator = readCanonicalLocator(left);
+  const rightLocator = readCanonicalLocator(right);
+  return leftLocator !== undefined
+    && rightLocator !== undefined
+    && leftLocator.owner.toLowerCase() === rightLocator.owner.toLowerCase()
+    && leftLocator.repository.toLowerCase() === rightLocator.repository.toLowerCase();
 }
 
 /**
@@ -57,7 +60,16 @@ export function withRepositoryId(
   if (!isRepositoryId(repositoryId)) {
     throw new Error('repositoryId must be a positive decimal string');
   }
-  return Object.freeze({ ...locator, repositoryId });
+  const canonical = readCanonicalLocator(locator);
+  if (!canonical) {
+    throw new Error('Repository locator must be canonical github.com owner/repository');
+  }
+  return Object.freeze({
+    host: canonical.host,
+    owner: canonical.owner,
+    repository: canonical.repository,
+    repositoryId,
+  });
 }
 
 function parseHttpsLocator(raw: string): GitHubRepositoryLocator {
@@ -74,6 +86,45 @@ function parseScpLocator(raw: string): GitHubRepositoryLocator {
     throw new Error('Repository locator must be a canonical GitHub scp-style URL');
   }
   return buildLocator([match[1], match[2]]);
+}
+
+function readCanonicalLocator(input: unknown): GitHubRepositoryLocator | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return undefined;
+  }
+
+  const value = input as Record<PropertyKey, unknown>;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== 3
+      || !Object.prototype.hasOwnProperty.call(value, 'host')
+      || !Object.prototype.hasOwnProperty.call(value, 'owner')
+      || !Object.prototype.hasOwnProperty.call(value, 'repository')) {
+    return undefined;
+  }
+
+  let host: unknown;
+  let owner: unknown;
+  let repository: unknown;
+  try {
+    ({ host, owner, repository } = value);
+  } catch {
+    return undefined;
+  }
+
+  if (host !== 'github.com'
+      || typeof owner !== 'string'
+      || typeof repository !== 'string'
+      || !COMPONENT.test(owner)
+      || !COMPONENT.test(repository)
+      || owner === '.'
+      || owner === '..'
+      || repository === '.'
+      || repository === '..'
+      || repository.endsWith('.git')) {
+    return undefined;
+  }
+
+  return { host: 'github.com', owner, repository };
 }
 
 function buildLocator(parts: string[]): GitHubRepositoryLocator {
