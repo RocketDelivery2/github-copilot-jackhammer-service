@@ -4,9 +4,12 @@ export interface GitHubRepositoryLocator {
   readonly repository: string;
 }
 
-export interface GitHubRepositoryIdentity extends GitHubRepositoryLocator {
+export interface GitHubRepositoryIdentity {
+  readonly host: 'github.com';
+  readonly owner: string;
+  readonly repository: string;
   /** Populated later by an authenticated GitHub repository lookup. */
-  readonly repositoryId?: string;
+  readonly repositoryId: string;
 }
 
 /** The authoritative part of an identity. Resolved identities and RepoSeeds both satisfy it. */
@@ -26,6 +29,7 @@ export function parseGitHubRepositoryLocator(raw: string): GitHubRepositoryLocat
   return parseHttpsLocator(raw);
 }
 
+/** Locator equality intentionally accepts only the three-key locator; identities use ID equality. */
 export function repositoryLocatorsEqual(
   left: GitHubRepositoryLocator,
   right: GitHubRepositoryLocator,
@@ -46,13 +50,14 @@ export function repositoryLocatorsEqual(
  * GitHub lookup or a verified RepoSeed.
  */
 export function repositoryIdentitiesEqual(
-  left: GitHubRepositoryKey,
-  right: GitHubRepositoryKey,
+  left: unknown,
+  right: unknown,
 ): boolean {
   const leftId = resolvedRepositoryId(left);
   return leftId !== undefined && leftId === resolvedRepositoryId(right);
 }
 
+/** Attach an ID only to a locator; passing a four-key identity is intentionally rejected. */
 export function withRepositoryId(
   locator: GitHubRepositoryLocator,
   repositoryId: string,
@@ -147,9 +152,16 @@ function buildLocator(parts: string[]): GitHubRepositoryLocator {
 }
 
 /** Reads host and repositoryId once; undefined unless github.com with a canonical ID. */
-function resolvedRepositoryId(key: GitHubRepositoryKey): string | undefined {
-  const { host, repositoryId } = key;
-  return host === 'github.com' && isRepositoryId(repositoryId) ? repositoryId : undefined;
+function resolvedRepositoryId(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  try {
+    const { host, repositoryId } = value as Partial<GitHubRepositoryKey>;
+    return host === 'github.com' && isRepositoryId(repositoryId) ? repositoryId : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isRepositoryId(value: string | undefined): value is string {

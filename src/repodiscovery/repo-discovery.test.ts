@@ -9,7 +9,7 @@ import {
   type GitHubRepositoryLocator,
   withRepositoryId,
 } from './repo-discovery.js';
-import { createRepoSeed } from './repo-seed.js';
+import { createRepoSeed } from '../reposeed/repo-seed.js';
 
 function assertLocatorRejected(value: string, message: RegExp = /^Repository locator /): void {
   assert.throws(
@@ -133,19 +133,15 @@ describe('RepoDiscovery identity helpers', () => {
   });
 
   it('treats the numeric repositoryId as identity across rename and transfer', () => {
-    const original = withRepositoryId(
-      parseGitHubRepositoryLocator('https://github.com/old-owner/old-name'),
-      '1236481916',
-    );
+    const originalLocator = parseGitHubRepositoryLocator('https://github.com/old-owner/old-name');
+    const original = withRepositoryId(originalLocator, '1236481916');
     const renamed = withRepositoryId(
       parseGitHubRepositoryLocator('https://github.com/old-owner/new-name'),
       '1236481916',
     );
-    const transferred = withRepositoryId(
-      parseGitHubRepositoryLocator('git@github.com:new-owner/new-name.git'),
-      '1236481916',
-    );
-    assert.equal(repositoryLocatorsEqual(original, transferred), false);
+    const transferredLocator = parseGitHubRepositoryLocator('git@github.com:new-owner/new-name.git');
+    const transferred = withRepositoryId(transferredLocator, '1236481916');
+    assert.equal(repositoryLocatorsEqual(originalLocator, transferredLocator), false);
     assert.equal(repositoryIdentitiesEqual(original, renamed), true);
     assert.equal(repositoryIdentitiesEqual(original, transferred), true);
   });
@@ -157,6 +153,9 @@ describe('RepoDiscovery identity helpers', () => {
       false,
     );
     assert.equal(repositoryIdentitiesEqual(locator, locator), false);
+    assert.equal(repositoryIdentitiesEqual(null, locator), false);
+    assert.equal(repositoryIdentitiesEqual(undefined, locator), false);
+    assert.equal(repositoryIdentitiesEqual('not-an-identity', 42), false);
     for (const repositoryId of ['01', ' 111', '111\n', '\u0661']) {
       assert.equal(
         repositoryIdentitiesEqual({ ...locator, repositoryId }, { ...locator, repositoryId }),

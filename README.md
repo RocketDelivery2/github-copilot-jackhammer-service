@@ -47,6 +47,20 @@ OpenAI/ChatGPT reads the latest repo snapshot
 
 These notes cover the expected failure modes for scheduled runs and the operations this repo intentionally keeps manual.
 
+## Knights of the Round Table
+
+JackHammer includes a bounded multi-provider discussion foundation called
+**Knights of the Round Table**. It is designed for important decisions that
+benefit from independent AI perspectives, explicit disagreement, and human
+control. See [`docs/knights-round-table.md`](./docs/knights-round-table.md) for
+the current Round One evidence contract and the future toggled discussion
+model.
+
+The first external repository planned for JackHammer validation is
+**Teambuilder**. Validation must begin in read-only or dry-run mode against an
+explicit repository identity; selecting a test target does not grant
+JackHammer permission to change that repository.
+
 ---
 
 ## Quick start
