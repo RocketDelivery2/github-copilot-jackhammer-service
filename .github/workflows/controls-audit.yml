@@ -36,8 +36,11 @@ jobs:
           echo "### Branch protection: main" >> "$REPORT_FILE"
 
           BP_JSON=$(gh api "repos/$REPO/branches/main/protection" 2>/dev/null || true)
-          if [ -z "$BP_JSON" ]; then
-            fail "Unable to read branch protection for main (missing protection or insufficient permissions)."
+          BP_ERROR=$(echo "$BP_JSON" | jq -r 'if type == "object" and has("message") then .message else empty end' 2>/dev/null || echo "unparseable response")
+          if [ -z "$BP_JSON" ] || [ -n "$BP_ERROR" ]; then
+            # The workflow token usually cannot read protection settings; report that
+            # as UNKNOWN evidence instead of claiming each individual rule is disabled.
+            fail "Unable to read branch protection for main (${BP_ERROR:-empty response}); protection rules are UNKNOWN, not verified."
           else
             PR_REQUIRED=$(echo "$BP_JSON" | jq 'has("required_pull_request_reviews") and (.required_pull_request_reviews.required_approving_review_count >= 1)')
             STRICT_UPTODATE=$(echo "$BP_JSON" | jq '.required_status_checks.strict == true')
@@ -57,35 +60,28 @@ jobs:
           echo "" >> "$REPORT_FILE"
           echo "### Workflow controls" >> "$REPORT_FILE"
 
-          check_workflow() {
-            local file="$1"
-            local has_deny has_guard has_summary merge_count guard_count
+          SAFE=".github/workflows/safe-automerge.yml"
+          if [ ! -f "$SAFE" ]; then
+            fail "$SAFE missing"
+          else
+            grep -q -- '--match-head-commit' "$SAFE" && pass "$SAFE merges only at the evaluated head SHA" || fail "$SAFE merge is not pinned to the head SHA"
+            grep -q "vars.AUTOMERGE_MODE == 'enforce'" "$SAFE" && pass "$SAFE merge is gated on AUTOMERGE_MODE=enforce" || fail "$SAFE merge is not gated on AUTOMERGE_MODE"
+            grep -q 'automerge-eligibility-cli.ts' "$SAFE" && pass "$SAFE uses the shared eligibility policy" || fail "$SAFE does not use the shared eligibility policy"
+            grep -Eq '^[[:space:]]+pull_request(_target)?:' "$SAFE" && fail "$SAFE runs on PR events (PR-controlled context)" || pass "$SAFE does not run on PR events"
+          fi
 
-            if [ ! -f "$file" ]; then
-              fail "$file missing"
-              return
+          for file in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -f "$file" ] || continue
+            # This audit file contains the patterns it searches for.
+            [ "$file" = ".github/workflows/controls-audit.yml" ] && continue
+            grep -Eq 'gh pr merge[^#]*--admin' "$file" && fail "$file merges with --admin (branch-protection bypass)"
+            grep -Eq 'gh pr review[^#]*--approve|event: .APPROVE' "$file" && fail "$file submits PR approvals"
+            grep -Eq 'gh pr merge[^#]*--auto' "$file" && fail "$file arms --auto merge"
+            if grep -q 'gh pr merge' "$file" && [ "$file" != "$SAFE" ]; then
+              fail "$file merges PRs outside safe-automerge.yml"
             fi
-
-            has_deny=$(grep -E 'security|breaking-change|do-not-merge' "$file" >/dev/null && echo true || echo false)
-            has_guard=$(grep -E "if:\s*steps\.gates\.outputs\.gate_pass\s*==\s*'true'" "$file" >/dev/null && echo true || echo false)
-            has_summary=$(grep -E '\$GITHUB_STEP_SUMMARY|summary' "$file" >/dev/null && echo true || echo false)
-
-            merge_count=$(grep -c 'gh pr merge' "$file" || true)
-            guard_count=$(grep -Ec "if:\s*steps\.gates\.outputs\.gate_pass\s*==\s*'true'" "$file" || true)
-
-            [ "$has_deny" = "true" ] && pass "$file deny-label blocking present" || fail "$file deny-label blocking missing"
-            [ "$has_guard" = "true" ] && pass "$file guarded merge condition present" || fail "$file guarded merge condition missing"
-            [ "$has_summary" = "true" ] && pass "$file step-summary logging present" || fail "$file step-summary logging missing"
-
-            if [ "$merge_count" -gt "$guard_count" ]; then
-              fail "$file has potential unconditional merge path (merge_count=$merge_count guard_count=$guard_count)"
-            else
-              pass "$file has no unconditional merge path"
-            fi
-          }
-
-          check_workflow ".github/workflows/auto-merge.yml"
-          check_workflow ".github/workflows/dependabot-auto-merge.yml"
+          done
+          pass "workflow merge/approval scan complete"
 
           echo "" >> "$REPORT_FILE"
           if [ "$FAIL" -eq 0 ]; then
