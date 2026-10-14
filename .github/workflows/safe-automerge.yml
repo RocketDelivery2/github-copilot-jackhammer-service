@@ -4,8 +4,6 @@ on:
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
   check_run:
     types: [completed]
   workflow_dispatch:
@@ -108,10 +106,12 @@ jobs:
           ')
           GATE_PASS=$(jq -r '.allowed' <<<"$EVALUATION_JSON")
           DO_ARM=$(jq -r '.doArm' <<<"$EVALUATION_JSON")
+          AUTO_MERGE_ENABLED=$(jq -r '.autoMergeRequest != null' <<<"$PR_JSON")
           GATE_LOG=$(jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"' <<<"$EVALUATION_JSON")
 
           echo "gate_pass=$GATE_PASS" >> "$GITHUB_OUTPUT"
           echo "do_arm=$DO_ARM" >> "$GITHUB_OUTPUT"
+          echo "auto_merge_enabled=$AUTO_MERGE_ENABLED" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           {
             echo 'gate_log<<JH_GATE_LOG'
@@ -153,3 +153,20 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ steps.gates.outputs.head_sha }}
         run: gh pr merge --auto --squash --delete-branch --match-head-commit "$HEAD_SHA" "$PR_NUMBER" --repo "$REPO"
+
+      - name: Disable native auto-merge when policy blocks
+        if: steps.gates.outputs.gate_pass == 'false' && steps.gates.outputs.auto_merge_enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.resolve.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh pr merge "$PR" --repo "$REPO" --disable-auto; then
+            echo "## Auto-merge disarm — PR #${PR}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: native auto-merge disabled because policy evaluation blocked." >> "$GITHUB_STEP_SUMMARY"
+          else
+            EXIT_CODE=$?
+            echo "## Auto-merge disarm — PR #${PR}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: disabling native auto-merge failed (exit code ${EXIT_CODE})." >> "$GITHUB_STEP_SUMMARY"
+            exit "$EXIT_CODE"
+          fi

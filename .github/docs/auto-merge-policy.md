@@ -27,7 +27,9 @@ All merge-arm steps require the evaluator's `do_arm == true` output. The evaluat
 
 ## Event and reporting behavior
 
-Policy workflows evaluate PR open/synchronize/reopen/ready/label events, review submissions, completed checks, and manual dispatch on `main`. Decisions are written to the workflow run summary; the safe-automerge workflow does not post PR comments.
+The `safe-automerge` and `dependabot-auto-merge` workflows evaluate `pull_request_target` open/synchronize/reopen/ready/label events, completed `check_run` events, and manual `workflow_dispatch` on `main`. They do not listen to `pull_request` or `pull_request_review` events. Decisions are written to the workflow run summary; the safe-automerge workflow does not post PR comments.
+
+If policy evaluation returns `allowed: false` while GitHub reports native auto-merge already enabled, the workflow runs `gh pr merge --disable-auto` for that PR. The step summary records whether disarming succeeded or failed; a failed disarm also fails the workflow step.
 
 The Dependabot auto-approve workflow is a separate control and is not changed here. Its approval is not sufficient for this policy: the merge evaluator requires an independent non-bot approval. Review that workflow separately before broadening unattended dependency automation.
 
