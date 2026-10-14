@@ -57,7 +57,7 @@ the current Round One evidence contract and the future toggled discussion
 model.
 
 The first external repository planned for JackHammer validation is
-**Teambuilder**. Validation must begin in read-only or dry-run mode against an
+**TeamBuilder**. Validation must begin in read-only or dry-run mode against an
 explicit repository identity; selecting a test target does not grant
 JackHammer permission to change that repository.
 

@@ -15,7 +15,8 @@ responses are normalized into an evidence packet with:
 
 - provider, model, request, token, latency, and error metadata;
 - a SHA-256 hash of the raw response;
-- redacted response text for analysis and display;
+- response text is redacted for analysis and display today; outbound context
+  redaction remains a required capability that is not yet implemented;
 - deterministic agreement and disagreement findings;
 - factual claims requiring verification;
 - proposed next actions; and
@@ -63,9 +64,9 @@ provider failure must be represented in evidence rather than hidden.
 - No discussion may bypass branch protection, required checks, human approval,
   or explicit authorization.
 
-## Teambuilder validation target
+## TeamBuilder validation target
 
-Teambuilder is the first planned external validation target. The initial run
+TeamBuilder is the first planned external validation target. The initial run
 should be read-only or dry-run and should confirm:
 
 - the configured GitHub repository identity is exact;

@@ -8,7 +8,6 @@ export interface GitHubRepositoryIdentity {
   readonly host: 'github.com';
   readonly owner: string;
   readonly repository: string;
-  /** Populated later by an authenticated GitHub repository lookup. */
   readonly repositoryId: string;
 }
 
@@ -16,7 +15,12 @@ export interface GitHubRepositoryIdentity {
 export type GitHubRepositoryKey = Pick<GitHubRepositoryIdentity, 'host' | 'repositoryId'>;
 
 const COMPONENT = /^[A-Za-z0-9_.-]+$/;
+const DOT_ONLY = /^\.+$/;
 const REPOSITORY_ID = /^[1-9][0-9]*$/;
+
+function isCanonicalComponent(value: string): boolean {
+  return COMPONENT.test(value) && !DOT_ONLY.test(value);
+}
 
 export function parseGitHubRepositoryLocator(raw: string): GitHubRepositoryLocator {
   if (typeof raw !== 'string' || raw.length === 0 || raw !== raw.trim() || raw.includes('\\')) {
@@ -50,8 +54,8 @@ export function repositoryLocatorsEqual(
  * GitHub lookup or a verified RepoSeed.
  */
 export function repositoryIdentitiesEqual(
-  left: unknown,
-  right: unknown,
+  left: GitHubRepositoryKey | null | undefined,
+  right: GitHubRepositoryKey | null | undefined,
 ): boolean {
   const leftId = resolvedRepositoryId(left);
   return leftId !== undefined && leftId === resolvedRepositoryId(right);
@@ -119,13 +123,9 @@ function readCanonicalLocator(input: unknown): GitHubRepositoryLocator | undefin
   if (host !== 'github.com'
       || typeof owner !== 'string'
       || typeof repository !== 'string'
-      || !COMPONENT.test(owner)
-      || !COMPONENT.test(repository)
-      || owner === '.'
-      || owner === '..'
-      || repository === '.'
-      || repository === '..'
-      || repository.endsWith('.git')) {
+      || !isCanonicalComponent(owner)
+      || !isCanonicalComponent(repository)
+      || /\.git$/i.test(repository)) {
     return undefined;
   }
 
@@ -138,14 +138,14 @@ function buildLocator(parts: string[]): GitHubRepositoryLocator {
   }
   const owner = parts[0];
   const repositoryWithSuffix = parts[1];
-  if (!owner || !repositoryWithSuffix || !COMPONENT.test(owner) || !COMPONENT.test(repositoryWithSuffix)
-      || owner === '.' || owner === '..' || repositoryWithSuffix === '.' || repositoryWithSuffix === '..') {
+  if (!owner || !repositoryWithSuffix || !isCanonicalComponent(owner)
+      || !isCanonicalComponent(repositoryWithSuffix)) {
     throw new Error('Repository locator contains an invalid owner or repository');
   }
   const repository = repositoryWithSuffix.endsWith('.git')
     ? repositoryWithSuffix.slice(0, -4)
     : repositoryWithSuffix;
-  if (!repository || repository.endsWith('.git') || repository === '.' || repository === '..') {
+  if (!repository || /\.git$/i.test(repository) || !isCanonicalComponent(repository)) {
     throw new Error('Repository locator contains a malformed .git suffix');
   }
   return Object.freeze({ host: 'github.com', owner, repository });
@@ -157,8 +157,20 @@ function resolvedRepositoryId(value: unknown): string | undefined {
     return undefined;
   }
   try {
-    const { host, repositoryId } = value as Partial<GitHubRepositoryKey>;
-    return host === 'github.com' && isRepositoryId(repositoryId) ? repositoryId : undefined;
+    const hostDescriptor = Object.getOwnPropertyDescriptor(value, 'host');
+    const repositoryIdDescriptor = Object.getOwnPropertyDescriptor(value, 'repositoryId');
+    if (!hostDescriptor || !('value' in hostDescriptor)
+        || !repositoryIdDescriptor || !('value' in repositoryIdDescriptor)) {
+      return undefined;
+    }
+
+    const host = hostDescriptor.value;
+    const repositoryId = repositoryIdDescriptor.value;
+    return host === 'github.com'
+      && typeof repositoryId === 'string'
+      && isRepositoryId(repositoryId)
+      ? repositoryId
+      : undefined;
   } catch {
     return undefined;
   }

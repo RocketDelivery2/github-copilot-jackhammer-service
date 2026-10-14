@@ -48,13 +48,25 @@ describe('RepoDiscovery identity helpers', () => {
     assert.equal(repositoryLocatorsEqual(left, { ...right, repository: 'other' }), false);
   });
 
+  it('rejects dot-only owner components when comparing locators', () => {
+    const left = { host: 'github.com', owner: '...', repository: 'repo' } as const;
+    const right = { host: 'github.com', owner: '...', repository: 'repo' } as const;
+    assert.equal(repositoryLocatorsEqual(left, right), false);
+  });
+
   it('compares resolved identities only when both decimal IDs match', () => {
     const locator = parseGitHubRepositoryLocator('https://github.com/owner/repo');
     const left = withRepositoryId(locator, '111');
     const right = withRepositoryId({ ...locator, owner: 'Owner' }, '111');
     assert.equal(repositoryIdentitiesEqual(left, right), true);
     assert.equal(repositoryIdentitiesEqual(left, { ...right, repositoryId: '222' }), false);
-    assert.equal(repositoryIdentitiesEqual(left, { ...right, repositoryId: undefined }), false);
+    assert.equal(
+      repositoryIdentitiesEqual(
+        left,
+        { ...right, repositoryId: undefined } as unknown as GitHubRepositoryKey,
+      ),
+      false,
+    );
     assertRepositoryIdRejected(locator, '01');
     assertRepositoryIdRejected(locator, '0');
     assertRepositoryIdRejected(locator, '1 ');
@@ -96,9 +108,18 @@ describe('RepoDiscovery identity helpers', () => {
       'https://github.com/owner/repo/../other',
       'https://github.com/a/b/../c',
       'https://github.com/owner/./repo',
+      'https://github.com/owner/...',
+      'https://github.com/owner/....git',
+      'git@github.com:owner/....git',
+      'https://github.com/.../repo',
+      'https://github.com/owner/repo.GIT.git',
     ]) {
       assertLocatorRejected(value);
     }
+    assertLocatorRejected(
+      'https://github.com/owner/repo.GIT',
+      /^Repository locator contains a malformed \.git suffix$/,
+    );
   });
 
   it('rejects URL parser normalization and control-character inputs', () => {
@@ -152,15 +173,79 @@ describe('RepoDiscovery identity helpers', () => {
       repositoryIdentitiesEqual(withRepositoryId(locator, '111'), withRepositoryId(locator, '222')),
       false,
     );
-    assert.equal(repositoryIdentitiesEqual(locator, locator), false);
-    assert.equal(repositoryIdentitiesEqual(null, locator), false);
-    assert.equal(repositoryIdentitiesEqual(undefined, locator), false);
-    assert.equal(repositoryIdentitiesEqual('not-an-identity', 42), false);
+    assert.equal(
+      repositoryIdentitiesEqual(
+        locator as unknown as GitHubRepositoryKey,
+        locator as unknown as GitHubRepositoryKey,
+      ),
+      false,
+    );
+    assert.equal(
+      repositoryIdentitiesEqual(null, locator as unknown as GitHubRepositoryKey),
+      false,
+    );
+    assert.equal(
+      repositoryIdentitiesEqual(undefined, locator as unknown as GitHubRepositoryKey),
+      false,
+    );
+    assert.equal(
+      repositoryIdentitiesEqual(
+        'not-an-identity' as unknown as GitHubRepositoryKey,
+        42 as unknown as GitHubRepositoryKey,
+      ),
+      false,
+    );
     for (const repositoryId of ['01', ' 111', '111\n', '\u0661']) {
       assert.equal(
         repositoryIdentitiesEqual({ ...locator, repositoryId }, { ...locator, repositoryId }),
         false,
       );
+    }
+  });
+
+  it('requires own data properties for repository identity keys', () => {
+    const clean = withRepositoryId(
+      parseGitHubRepositoryLocator('https://github.com/owner/repo'),
+      '111',
+    );
+    const inherited = Object.create({ host: 'github.com', repositoryId: '111' }) as GitHubRepositoryKey;
+    assert.equal(repositoryIdentitiesEqual(inherited, clean), false);
+
+    const accessor = { host: 'github.com' } as { host: 'github.com'; repositoryId?: string };
+    Object.defineProperty(accessor, 'repositoryId', {
+      configurable: true,
+      enumerable: true,
+      get: () => '111',
+    });
+    assert.equal(repositoryIdentitiesEqual(accessor as GitHubRepositoryKey, clean), false);
+  });
+
+  it('ignores Object.prototype identity-key pollution and restores the prototype', () => {
+    const clean = withRepositoryId(
+      parseGitHubRepositoryLocator('https://github.com/owner/repo'),
+      '111',
+    );
+    const previousHost = Object.getOwnPropertyDescriptor(Object.prototype, 'host');
+    const previousRepositoryId = Object.getOwnPropertyDescriptor(Object.prototype, 'repositoryId');
+
+    try {
+      Object.defineProperties(Object.prototype, {
+        host: { configurable: true, enumerable: true, value: 'github.com', writable: true },
+        repositoryId: { configurable: true, enumerable: true, value: '111', writable: true },
+      });
+      assert.equal(repositoryIdentitiesEqual({} as GitHubRepositoryKey, clean), false);
+      assert.equal(repositoryIdentitiesEqual({} as GitHubRepositoryKey, {} as GitHubRepositoryKey), false);
+    } finally {
+      if (previousHost) {
+        Object.defineProperty(Object.prototype, 'host', previousHost);
+      } else {
+        Reflect.deleteProperty(Object.prototype, 'host');
+      }
+      if (previousRepositoryId) {
+        Object.defineProperty(Object.prototype, 'repositoryId', previousRepositoryId);
+      } else {
+        Reflect.deleteProperty(Object.prototype, 'repositoryId');
+      }
     }
   });
 
@@ -247,6 +332,10 @@ describe('RepoDiscovery identity helpers', () => {
       { host: 'github.com', owner: 'not/valid', repository: 'repo' },
       { host: 'github.com', owner: 'owner', repository: '..' },
       { host: 'github.com', owner: 'owner', repository: 'repo', evil: 'x' },
+      { host: 'github.com', owner: 'owner', repository: '...' },
+      { host: 'github.com', owner: '...', repository: 'repo' },
+      { host: 'github.com', owner: 'owner', repository: '....' },
+      { host: 'github.com', owner: 'owner', repository: 'repo.GIT' },
     ]) {
       assert.throws(
         () => withRepositoryId(locator as unknown as GitHubRepositoryLocator, '111'),
