@@ -4,7 +4,7 @@
 
 The workflows in this document may request GitHub's native auto-merge only after every policy gate passes. They never call an admin/bypass merge. GitHub branch protection and repository settings remain independent required controls; this code does not configure or prove those settings.
 
-`.github/workflows/auto-merge.yml` only opens a **draft** PR for a newly created branch. It has no approval or merge permission. `.github/workflows/safe-automerge.yml` is the general policy gate. `.github/workflows/dependabot-auto-merge.yml` adds the Dependabot update-type gate and uses the same pure policy evaluator.
+`.github/workflows/auto-merge.yml` only opens a **draft** PR for a newly created branch. It has no approval or merge permission. `.github/workflows/safe-automerge.yml` is the general policy gate for non-Dependabot branches. `.github/workflows/dependabot-auto-merge.yml` handles only `dependabot/` head branches, adds the Dependabot update-type gate, and uses the same pure policy evaluator. The general workflow skips `dependabot/` head branches, keeping the populations disjoint.
 
 There is no label-based human or `github-actions[bot]` author bypass. The explicit `auto-merge` label is an opt-in signal, not an override for any other gate. `no-auto-merge`, `security`, `breaking-change`, and `do-not-merge` always block.
 
@@ -27,9 +27,9 @@ All merge-arm steps require the evaluator's `do_arm == true` output. The evaluat
 
 ## Event and reporting behavior
 
-The `safe-automerge` and `dependabot-auto-merge` workflows evaluate `pull_request_target` open/synchronize/reopen/ready/label events, completed `check_run` events, and manual `workflow_dispatch` on `main`. They do not listen to `pull_request` or `pull_request_review` events. Decisions are written to the workflow run summary; the safe-automerge workflow does not post PR comments.
+The `safe-automerge` and `dependabot-auto-merge` workflows evaluate `pull_request_target` open/synchronize/reopen/ready/label events, completed `check_run` events, and manual `workflow_dispatch` on `main`. They do not listen to `pull_request`, `pull_request_review`, or `pull_request_review_comment` events. GitHub does not trigger these workflows for `check_run` events created by GitHub Actions; after a push, re-arming therefore requires a label event or manual `workflow_dispatch`. Decisions are written to the workflow run summary; the safe-automerge workflow does not post PR comments.
 
-If policy evaluation returns `allowed: false` while GitHub reports native auto-merge already enabled, the workflow runs `gh pr merge --disable-auto` for that PR. The step summary records whether disarming succeeded or failed; a failed disarm also fails the workflow step.
+If policy evaluation returns `allowed: false` while GitHub reports native auto-merge already enabled by `github-actions[bot]`, the workflow runs `gh pr merge --disable-auto` for that PR. If gate evaluation did not complete successfully, it re-reads the PR's auto-merge request before considering disarm. The step summary records whether disarming succeeded or failed; a failed disarm also fails the workflow step. Auto-merge requests enabled by other actors are not disabled by these workflows.
 
 The Dependabot auto-approve workflow is a separate control and is not changed here. Its approval is not sufficient for this policy: the merge evaluator requires an independent non-bot approval. Review that workflow separately before broadening unattended dependency automation.
 

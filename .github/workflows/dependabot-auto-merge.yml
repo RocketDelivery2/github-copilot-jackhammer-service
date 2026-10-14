@@ -31,6 +31,8 @@ jobs:
         env:
           PR_NUMBER_INPUT: ${{ github.event.inputs.pr_number }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           PR_NUMBER="${PR_NUMBER_INPUT:-$EVENT_PR_NUMBER}"
@@ -38,25 +40,36 @@ jobs:
             echo "PR number must be a positive decimal integer."
             exit 1
           fi
+          HEAD_REF_NAME=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName --jq '.headRefName')
+          if [[ "$HEAD_REF_NAME" != dependabot/* ]]; then
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            echo "## Dependabot auto-merge skipped — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Population: only Dependabot head branches are evaluated by this workflow." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Checkout trusted policy code
+        if: steps.resolve.outputs.pr_number != ''
         uses: actions/checkout@v4
         with:
           ref: main
           persist-credentials: false
 
       - name: Set up Node.js
+        if: steps.resolve.outputs.pr_number != ''
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
 
       - name: Install locked dependencies
+        if: steps.resolve.outputs.pr_number != ''
         run: npm ci
 
       - name: Fetch Dependabot update metadata
         id: metadata
+        if: steps.resolve.outputs.pr_number != ''
         uses: dependabot/fetch-metadata@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -64,6 +77,7 @@ jobs:
 
       - name: Evaluate policy gates
         id: gates
+        if: steps.resolve.outputs.pr_number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
@@ -80,11 +94,13 @@ jobs:
           CHECKS_JSON=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
             --jq '.check_runs[] | {name, status: (.status | ascii_upcase), conclusion: (if .conclusion == null then null else (.conclusion | ascii_upcase) end), headSha: .head_sha}' \
             | jq -s '.')
+          AUTO_MERGE_ENABLED=$(jq -r '.autoMergeRequest != null and .autoMergeRequest.enabledBy.login == "github-actions[bot]"' <<<"$PR_JSON")
           PR_CONTEXT_JSON=$(jq -n \
             --argjson pr "$PR_JSON" \
             --arg head_author "$HEAD_AUTHOR_LOGIN" \
             --argjson files "$FILES_JSON" \
             --argjson checks "$CHECKS_JSON" \
+            --argjson auto_merge_enabled "$AUTO_MERGE_ENABLED" \
             --arg update_type "$DEPENDENCY_UPDATE_TYPE" \
             --arg dependency_type "$DEPENDENCY_TYPE" \
             '{
@@ -106,7 +122,7 @@ jobs:
               mergeStateStatus: $pr.mergeStateStatus,
               dependencyUpdateType: (if $update_type == "" then null else $update_type end),
               dependencyType: (if $dependency_type == "" then null else $dependency_type end),
-              autoMergeEnabled: ($pr.autoMergeRequest != null)
+              autoMergeEnabled: $auto_merge_enabled
             }')
           EVALUATION_JSON=$(AUTO_MERGE_PR_CONTEXT_JSON="$PR_CONTEXT_JSON" node --import tsx --input-type=module -e '
             import process from "node:process";
@@ -119,7 +135,6 @@ jobs:
           ')
           GATE_PASS=$(jq -r '.allowed' <<<"$EVALUATION_JSON")
           DO_ARM=$(jq -r '.doArm' <<<"$EVALUATION_JSON")
-          AUTO_MERGE_ENABLED=$(jq -r '.autoMergeRequest != null' <<<"$PR_JSON")
           GATE_LOG=$(jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"' <<<"$EVALUATION_JSON")
           echo "gate_pass=$GATE_PASS" >> "$GITHUB_OUTPUT"
           echo "do_arm=$DO_ARM" >> "$GITHUB_OUTPUT"
@@ -132,7 +147,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Write decision summary
-        if: always()
+        if: always() && steps.resolve.outputs.pr_number != ''
         env:
           GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
           DO_ARM: ${{ steps.gates.outputs.do_arm }}
@@ -158,7 +173,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enable auto-merge for eligible Dependabot PR
-        if: steps.gates.outputs.do_arm == 'true'
+        if: steps.resolve.outputs.pr_number != '' && steps.gates.outputs.do_arm == 'true'
         env:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -167,18 +182,34 @@ jobs:
         run: gh pr merge --auto --squash --delete-branch --match-head-commit "$HEAD_SHA" "$PR_NUMBER" --repo "$REPO"
 
       - name: Disable native auto-merge when policy blocks
-        if: steps.gates.outputs.gate_pass == 'false' && steps.gates.outputs.auto_merge_enabled == 'true'
+        if: always() && steps.resolve.outputs.pr_number != '' && (steps.gates.outcome != 'success' || steps.gates.outputs.gate_pass == 'false')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ steps.resolve.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           REPO: ${{ github.repository }}
+          GATES_OUTCOME: ${{ steps.gates.outcome }}
+          AUTO_MERGE_ENABLED: ${{ steps.gates.outputs.auto_merge_enabled }}
         run: |
-          if gh pr merge "$PR" --repo "$REPO" --disable-auto; then
-            echo "## Auto-merge disarm — PR #${PR}" >> "$GITHUB_STEP_SUMMARY"
-            echo "Result: native auto-merge disabled because policy evaluation blocked." >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          if [ "$GATES_OUTCOME" != "success" ]; then
+            if PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json autoMergeRequest); then
+              AUTO_MERGE_ENABLED=$(jq -r '.autoMergeRequest != null and .autoMergeRequest.enabledBy.login == "github-actions[bot]"' <<<"$PR_JSON")
+            else
+              EXIT_CODE=$?
+              echo "## Auto-merge disarm — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+              echo "Result: could not re-read auto-merge state (exit code ${EXIT_CODE}); no disarm attempted." >> "$GITHUB_STEP_SUMMARY"
+              exit "$EXIT_CODE"
+            fi
+          fi
+          if [ "$AUTO_MERGE_ENABLED" != "true" ]; then
+            echo "## Auto-merge disarm — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: no disarm; native auto-merge is not enabled by github-actions[bot]." >> "$GITHUB_STEP_SUMMARY"
+          elif gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto; then
+            echo "## Auto-merge disarm — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: native auto-merge disabled because policy evaluation blocked or did not complete." >> "$GITHUB_STEP_SUMMARY"
           else
             EXIT_CODE=$?
-            echo "## Auto-merge disarm — PR #${PR}" >> "$GITHUB_STEP_SUMMARY"
+            echo "## Auto-merge disarm — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
             echo "Result: disabling native auto-merge failed (exit code ${EXIT_CODE})." >> "$GITHUB_STEP_SUMMARY"
             exit "$EXIT_CODE"
           fi
