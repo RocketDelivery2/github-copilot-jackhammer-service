@@ -1,60 +1,39 @@
-# Controls Audit
+# Controls audit
 
 ## Purpose
 
-`controls-audit.yml` runs on a daily schedule and on manual dispatch to detect
-security-control drift in merge protections and merge automation workflows.
+`controls-audit.yml` runs on a daily schedule and on manual dispatch to detect security-control drift in main-branch protection and merge-automation workflows.
 
 ## Controls validated
 
 ### Branch protection (`main`)
 
-The audit expects all of the following:
+When the GitHub protection endpoint is readable, the audit checks for required pull requests and at least one approving review, strict/up-to-date branches, required `test-and-build` and `Analyze (javascript-typescript)` checks, disabled force pushes, and disabled branch deletions.
 
-1. Pull requests are required before merge (`required_pull_request_reviews` present).
-2. At least 1 approving review is required.
-3. Required status checks include:
-   - `test-and-build`
-   - `CodeQL`
-4. Strict/up-to-date enforcement is enabled (`strict: true`).
-5. Force pushes are disabled.
-6. Branch deletions are disabled.
+An HTTP 403 is reported as **UNKNOWN / INCOMPLETE**, not as evidence of configuration drift. The run still fails so the lack of evidence is visible, but it does not open a drift issue based only on an authorization failure. Other API failures are also reported as unverified rather than misclassified as a settings result.
 
 ### Workflow guardrails
 
-The audit validates both:
+The audit verifies that both native auto-merge arming workflows:
 
-- `.github/workflows/auto-merge.yml`
-- `.github/workflows/dependabot-auto-merge.yml`
+- block the `no-auto-merge` deny label;
+- have a step-summary decision record;
+- expose and use a `do_arm == true` guard for every `gh pr merge` command.
 
-Expected controls in each workflow:
-
-1. Deny-label blocking for `security`, `breaking-change`, and `do-not-merge`.
-2. Guarded merge execution path (`if: steps.gates.outputs.gate_pass == 'true'`).
-3. Decision logging to workflow summary (`$GITHUB_STEP_SUMMARY`).
-4. No unconditional merge path (`gh pr merge` commands must remain gated).
+It also verifies that `.github/workflows/auto-merge.yml` has no approval or merge authority, and checks for key identity, exact-head, branch, and changed-file controls in the safe policy. Dependabot automation must include `npm ci` and `dependabot/fetch-metadata`.
 
 ## Drift behavior
 
-If drift is detected:
+Confirmed workflow/control drift writes details to the run summary, opens or appends to an issue titled `Controls audit drift detected on main`, then fails. Unreadable settings produce an incomplete audit and fail the run without opening a drift issue solely because of HTTP 403.
 
-1. The workflow writes detailed failures in the run summary.
-2. The workflow opens (or appends to) an issue titled:
-   - `Controls audit drift detected on main`
-   with label `controls-audit`.
-3. The workflow exits with failure (`exit 1`) to fail loudly.
+## Remediation
 
-## Remediation steps
+1. Open the failed `controls-audit` run and review its summary.
+2. Distinguish confirmed drift from an UNKNOWN/INCOMPLETE settings read.
+3. For an HTTP 403, have a repository owner inspect settings or grant the minimum read permission needed by the audit; do not infer a setting value.
+4. For confirmed workflow drift, restore the reviewed policy and update `.github/docs/auto-merge-policy.md` in the same PR.
+5. Re-run the audit. Close a drift issue only after the audit passes.
 
-1. Open the failed `controls-audit` run and review the summary table.
-2. Open the linked/new `controls-audit` issue and copy the failure details.
-3. Restore missing controls:
-   - Reapply `main` branch protection settings, or
-   - Restore workflow gate conditions and summary logging.
-4. Re-run `controls-audit` via **Actions → controls-audit → Run workflow**.
-5. Close the `controls-audit` issue after a passing run.
+## Change management
 
-## Change management rule
-
-Do not modify merge-policy workflows without PR review by a human maintainer.
-Any approved policy change must include a corresponding update to this document.
+Do not modify merge-policy workflows without PR review by a human maintainer and exact-head validation. The audit detects repository-file controls only; it does not configure repository settings or prove runtime token identity.
