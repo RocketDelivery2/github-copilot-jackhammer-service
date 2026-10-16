@@ -4,138 +4,214 @@ on:
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  check_run:
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to evaluate for Dependabot auto-merge'
+        required: true
+        type: string
 
 permissions: {}
 
 jobs:
   auto-merge:
-    name: Enable auto-merge for dependabot PRs
+    name: Enable auto-merge for eligible Dependabot PRs
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    if: >-
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'check_run' || github.event.check_run.name == 'test-and-build' || github.event.check_run.name == 'Analyze (javascript-typescript)')
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Resolve PR number
+        id: resolve
+        env:
+          PR_NUMBER_INPUT: ${{ github.event.inputs.pr_number }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER="${PR_NUMBER_INPUT:-$EVENT_PR_NUMBER}"
+          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "PR number must be a positive decimal integer."
+            exit 1
+          fi
+          HEAD_REF_NAME=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName --jq '.headRefName')
+          if [[ "$HEAD_REF_NAME" != dependabot/* ]]; then
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            echo "## Dependabot auto-merge skipped — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Population: only Dependabot head branches are evaluated by this workflow." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted policy code
+        if: steps.resolve.outputs.pr_number != ''
+        uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
-          fetch-depth: 0
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Node.js
+        if: steps.resolve.outputs.pr_number != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        if: steps.resolve.outputs.pr_number != ''
+        run: npm ci
+
+      - name: Fetch Dependabot update metadata
+        id: metadata
+        if: steps.resolve.outputs.pr_number != ''
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pull-request-number: ${{ steps.resolve.outputs.pr_number }}
 
       - name: Evaluate policy gates
         id: gates
+        if: steps.resolve.outputs.pr_number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          EXPECTED_REPO: RocketDelivery2/github-copilot-jackhammer-service
-          EVENT_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+          DEPENDENCY_UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDENCY_TYPE: ${{ steps.metadata.outputs.dependency-type }}
         run: |
           set -euo pipefail
-          PR_CONTEXT_JSON=$(gh pr view "$PR_URL" --json author,isDraft,labels,reviewDecision,mergeStateStatus,number,url)
-          EVALUATION_JSON=$(AUTO_MERGE_PR_CONTEXT_JSON="$PR_CONTEXT_JSON" AUTO_MERGE_REQUIRE_POLICY_LABEL=false AUTO_MERGE_APPROVED_BOT_AUTHORS='dependabot[bot]' node --import tsx src/auto-merge-policy-cli.ts)
-          GATE_PASS=$(echo "$EVALUATION_JSON" | jq -r '.allowed')
-          GATE_LOG=$(echo "$EVALUATION_JSON" | jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"')
-
-          append_gate() {
-            GATE_LOG="${GATE_LOG}| $1 | $2 | $3 |\n"
-          }
-
-          PR_JSON="$(gh pr view "$PR_URL" --json state,isDraft,headRefName,author,labels,autoMergeRequest)"
-          PR_STATE="$(echo "$PR_JSON" | jq -r '.state')"
-          PR_DRAFT="$(echo "$PR_JSON" | jq -r '.isDraft')"
-          HEAD_REF="$(echo "$PR_JSON" | jq -r '.headRefName')"
-          PR_AUTHOR="$(echo "$PR_JSON" | jq -r '.author.login')"
-          DENY_COUNT="$(echo "$PR_JSON" | jq '[.labels[]? | .name | select(. == "security" or . == "breaking-change" or . == "do-not-merge" or . == "no-auto-merge")] | length')"
-          AUTO_MERGE_ENABLED="$(echo "$PR_JSON" | jq '.autoMergeRequest != null')"
-
-          if [ "$EVENT_REPO" = "$EXPECTED_REPO" ]; then
-            append_gate "Gate 1: repository match" "PASS" "workflow executing on expected repository"
-          else
-            GATE_PASS=false
-            append_gate "Gate 1: repository match" "BLOCKED" "repository mismatch (${EVENT_REPO})"
-          fi
-
-          if [ "$PR_STATE" = "OPEN" ] && [ "$PR_DRAFT" = "false" ]; then
-            append_gate "Gate 2: open PR check" "PASS" "pull request is open and ready for review"
-          else
-            GATE_PASS=false
-            append_gate "Gate 2: open PR check" "BLOCKED" "pull request is not open-and-ready"
-          fi
-
-          if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
-            append_gate "Gate 3: actor check" "PASS" "pull request author is dependabot[bot]"
-          else
-            GATE_PASS=false
-            append_gate "Gate 3: actor check" "BLOCKED" "pull request author is ${PR_AUTHOR}"
-          fi
-
-          case "$HEAD_REF" in
-            dependabot/*)
-              append_gate "Gate 4: branch scope" "PASS" "head branch is within dependabot/*"
-              ;;
-            *)
-              GATE_PASS=false
-              append_gate "Gate 4: branch scope" "BLOCKED" "head branch ${HEAD_REF} is outside dependabot/*"
-              ;;
-          esac
-
-          if [ "$DENY_COUNT" -eq 0 ]; then
-            append_gate "Gate 5: deny labels" "PASS" "no deny labels present"
-          else
-            GATE_PASS=false
-            append_gate "Gate 5: deny labels" "BLOCKED" "deny label present (security/breaking-change/do-not-merge/no-auto-merge)"
-          fi
-
-          DO_ARM=false
-          IDEMPOTENCY_NOTE="auto-merge not armed; workflow will arm auto-merge if gates pass"
-          if [ "$AUTO_MERGE_ENABLED" = "true" ]; then
-            IDEMPOTENCY_NOTE="auto-merge already armed; workflow will not duplicate merge arming"
-          fi
-
-          if [ "$GATE_PASS" = "true" ] && [ "$AUTO_MERGE_ENABLED" != "true" ]; then
-            DO_ARM=true
-          fi
-
+          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json baseRefName,changedFiles,headRefName,headRefOid,isDraft,labels,mergeStateStatus,number,reviewDecision,reviews,state,url)
+          PR_REST_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+          HEAD_SHA=$(jq -er '.headRefOid | select(test("^[0-9a-f]{40}$"))' <<<"$PR_JSON")
+          HEAD_AUTHOR_LOGIN=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.author.login // ""')
+          FILES_JSON=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[]' | jq -s '[.[].filename]')
+          CHECKS_JSON=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | {name, status: (.status | ascii_upcase), conclusion: (if .conclusion == null then null else (.conclusion | ascii_upcase) end), headSha: .head_sha}' \
+            | jq -s '.')
+          AUTO_MERGE_ENABLED=$(jq -r '.auto_merge != null and .auto_merge.enabled_by.login == "github-actions[bot]"' <<<"$PR_REST_JSON")
+          PR_CONTEXT_JSON=$(jq -n \
+            --argjson pr "$PR_JSON" \
+            --argjson pr_rest "$PR_REST_JSON" \
+            --arg head_author "$HEAD_AUTHOR_LOGIN" \
+            --argjson files "$FILES_JSON" \
+            --argjson checks "$CHECKS_JSON" \
+            --argjson auto_merge_enabled "$AUTO_MERGE_ENABLED" \
+            --arg update_type "$DEPENDENCY_UPDATE_TYPE" \
+            --arg dependency_type "$DEPENDENCY_TYPE" \
+            '{
+              number: $pr.number,
+              url: $pr.url,
+              author: {login: $pr_rest.user.login},
+              headCommitAuthor: {login: $head_author},
+              isDraft: $pr.isDraft,
+              state: $pr.state,
+              baseRefName: $pr.baseRefName,
+              headRefName: $pr.headRefName,
+              headSha: $pr.headRefOid,
+              changedFileCount: $pr.changedFiles,
+              files: $files,
+              checks: $checks,
+              labels: [$pr.labels[] | {name}],
+              reviews: [$pr.reviews[] | {login: (.author.login // ""), state}],
+              reviewDecision: $pr.reviewDecision,
+              mergeStateStatus: $pr.mergeStateStatus,
+              dependencyUpdateType: (if $update_type == "" then null else $update_type end),
+              dependencyType: (if $dependency_type == "" then null else $dependency_type end),
+              autoMergeEnabled: $auto_merge_enabled
+            }')
+          EVALUATION_JSON=$(AUTO_MERGE_PR_CONTEXT_JSON="$PR_CONTEXT_JSON" node --import tsx --input-type=module -e '
+            import process from "node:process";
+            import { evaluateAutoMergePolicy } from "./src/auto-merge-policy.ts";
+            const context = JSON.parse(process.env.AUTO_MERGE_PR_CONTEXT_JSON ?? "");
+            process.stdout.write(JSON.stringify(evaluateAutoMergePolicy(context, {
+              requirePolicyLabel: false,
+              requireDependencyUpdateType: true,
+            })));
+          ')
+          GATE_PASS=$(jq -r '.allowed' <<<"$EVALUATION_JSON")
+          DO_ARM=$(jq -r '.doArm' <<<"$EVALUATION_JSON")
+          GATE_LOG=$(jq -r '.gates[] | "| " + .name + " | " + (if .allowed then "PASS" else "BLOCKED" end) + " | " + .detail + " |"' <<<"$EVALUATION_JSON")
           echo "gate_pass=$GATE_PASS" >> "$GITHUB_OUTPUT"
           echo "do_arm=$DO_ARM" >> "$GITHUB_OUTPUT"
-          echo "idempotency_note=$IDEMPOTENCY_NOTE" >> "$GITHUB_OUTPUT"
+          echo "auto_merge_enabled=$AUTO_MERGE_ENABLED" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           {
-            echo "gate_log<<EOF"
-            printf "%b" "$GATE_LOG"
-            echo "EOF"
+            echo 'gate_log<<JH_GATE_LOG'
+            printf '%s\n' "$GATE_LOG"
+            echo 'JH_GATE_LOG'
           } >> "$GITHUB_OUTPUT"
 
       - name: Write decision summary
-        if: always()
+        if: always() && steps.resolve.outputs.pr_number != ''
         env:
           GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
           DO_ARM: ${{ steps.gates.outputs.do_arm }}
           GATE_LOG: ${{ steps.gates.outputs.gate_log }}
-          IDEMPOTENCY_NOTE: ${{ steps.gates.outputs.idempotency_note }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
         run: |
           {
-            echo "## Dependabot auto-merge policy evaluation -- PR #${PR_NUMBER}"
+            echo "## Dependabot auto-merge policy evaluation — PR #${PR_NUMBER}"
             echo ""
             if [ "$GATE_PASS" = "true" ]; then
               if [ "$DO_ARM" = "true" ]; then
-                echo "Decision: ALLOW -- gates passed; auto-merge will be armed."
+                echo "Decision: ALLOW — patch/minor development dependency gates passed; native auto-merge will be armed."
               else
-                echo "Decision: NOOP -- gates passed but auto-merge is already armed."
+                echo "Decision: NOOP — eligible PR already has native auto-merge armed."
               fi
             else
-              echo "Decision: BLOCK -- one or more safety gates failed."
+              echo "Decision: BLOCK — one or more fail-closed gates did not pass."
             fi
             echo ""
             echo "| Gate | Result | Reason |"
             echo "|------|--------|--------|"
-            printf "%b" "$GATE_LOG"
-            echo ""
-            echo "Idempotency: ${IDEMPOTENCY_NOTE}"
+            printf '%s\n' "$GATE_LOG"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enable auto-merge for dependabot PR
-        if: steps.gates.outputs.do_arm == 'true'
+      - name: Enable auto-merge for eligible Dependabot PR
+        if: steps.resolve.outputs.pr_number != '' && steps.gates.outputs.do_arm == 'true'
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --squash --delete-branch "$PR_URL"
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.gates.outputs.head_sha }}
+        run: gh pr merge --auto --squash --delete-branch --match-head-commit "$HEAD_SHA" "$PR_NUMBER" --repo "$REPO"
+
+      - name: Disable native auto-merge when policy blocks
+        if: always() && steps.resolve.outputs.pr_number != '' && (steps.gates.outcome != 'success' || steps.gates.outputs.gate_pass == 'false')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+          GATES_OUTCOME: ${{ steps.gates.outcome }}
+          AUTO_MERGE_ENABLED: ${{ steps.gates.outputs.auto_merge_enabled }}
+        run: |
+          set -euo pipefail
+          if [ "$GATES_OUTCOME" != "success" ]; then
+            if PR_REST_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER"); then
+              AUTO_MERGE_ENABLED=$(jq -r '.auto_merge != null and .auto_merge.enabled_by.login == "github-actions[bot]"' <<<"$PR_REST_JSON")
+            else
+              EXIT_CODE=$?
+              echo "## Auto-merge disarm — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+              echo "Result: could not re-read auto-merge state (exit code ${EXIT_CODE}); no disarm attempted." >> "$GITHUB_STEP_SUMMARY"
+              exit "$EXIT_CODE"
+            fi
+          fi
+          if [ "$AUTO_MERGE_ENABLED" != "true" ]; then
+            echo "## Auto-merge disarm — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: no disarm; native auto-merge is not enabled by github-actions[bot]." >> "$GITHUB_STEP_SUMMARY"
+          elif gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto; then
+            echo "## Auto-merge disarm — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: native auto-merge disabled because policy evaluation blocked or did not complete." >> "$GITHUB_STEP_SUMMARY"
+          else
+            EXIT_CODE=$?
+            echo "## Auto-merge disarm — PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: disabling native auto-merge failed (exit code ${EXIT_CODE})." >> "$GITHUB_STEP_SUMMARY"
+            exit "$EXIT_CODE"
+          fi
