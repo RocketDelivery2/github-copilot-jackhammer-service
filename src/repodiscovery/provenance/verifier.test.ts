@@ -228,7 +228,7 @@ describe('seed validation', () => {
 });
 
 describe('port binding', () => {
-  const { ports: healthy } = createFakePorts(SHA1_FIELDS);
+  const { ports: healthy, calls: healthyCalls } = createFakePorts(SHA1_FIELDS);
 
   const containerCases: Array<[string, unknown]> = [
     ['undefined ports', undefined],
@@ -242,6 +242,7 @@ describe('port binding', () => {
   for (const [name, ports] of containerCases) {
     it(`rejects ${name} as container with zero calls`, async () => {
       await assertFails(verifyRepoProvenance(SEED, ports), 'INVALID_PORTS', { reason: 'container' });
+      assert.deepEqual(healthyCalls, []);
     });
   }
 
@@ -283,6 +284,25 @@ describe('port binding', () => {
     await assertFails(verifyRepoProvenance(SEED, { github, git: accessorGit }), 'INVALID_PORTS', { reason: 'method' });
     assert.equal(reads, 0);
     assert.deepEqual(calls, []);
+  });
+
+  it('rejects an accessor on an inherited port method without invoking it', async () => {
+    let reads = 0;
+    const { ports } = createFakePorts(SHA1_FIELDS);
+    class AccessorGitPort {
+      getEnvironment = ports.git.getEnvironment.bind(ports.git);
+      getObjectType = ports.git.getObjectType.bind(ports.git);
+      get getCommitTree() {
+        reads++;
+        return ports.git.getCommitTree.bind(ports.git);
+      }
+    }
+    await assertFails(
+      verifyRepoProvenance(SEED, { github: ports.github, git: new AccessorGitPort() }),
+      'INVALID_PORTS',
+      { reason: 'method' },
+    );
+    assert.equal(reads, 0);
   });
 
   it('accepts own methods on plain objects and inherited methods on class instances', async () => {
@@ -499,6 +519,35 @@ describe('port failures and malformed responses', () => {
     }
   }
 
+  it('rejects an accessor on a semantic evidence field without invoking it', async () => {
+    let reads = 0;
+    const record = {
+      repositoryId: SHA1_FIELDS.repositoryId,
+      commitOid: SHA1_FIELDS.commitSha,
+      scope: 'repository-reachable',
+    };
+    Object.defineProperty(record, 'treeOid', {
+      enumerable: true,
+      get: () => {
+        reads++;
+        return SHA1_FIELDS.treeSha;
+      },
+    });
+    const { result, calls } = verifyWith({ ...POISONED_LOCAL, getCommit: () => record });
+    await assertFails(result, 'INVALID_PORT_RESPONSE', { side: 'github', method: 'getCommit' });
+    assert.equal(reads, 0);
+    assert.equal(calls.length, 2);
+  });
+
+  it('keeps the port failure reason set closed at runtime', () => {
+    assert.ok(Object.isFrozen(PORT_FAILURE_REASONS));
+    assert.throws(() => (PORT_FAILURE_REASONS as unknown as string[]).push('token=LEAKED'), TypeError);
+    assert.deepEqual([...PORT_FAILURE_REASONS], [
+      'not-found', 'unauthorized', 'rate-limited', 'unavailable', 'ambiguous', 'io-error',
+    ]);
+    assert.throws(() => new ProvenancePortError('token=LEAKED' as PortFailureReason, 'x'), TypeError);
+  });
+
   it('rejects a non-string repository ID echo as malformed, not as a mismatch', async () => {
     const { result } = verifyWith({ getRepository: () => ({ repositoryId: 1048576001, objectFormat: 'sha1' }) });
     await assertFails(result, 'INVALID_PORT_RESPONSE', { side: 'github', method: 'getRepository' });
@@ -557,6 +606,23 @@ describe('local evidence', () => {
   it('rejects a local object echo mismatch', async () => {
     const { result } = verifyWith({ getObjectType: () => ({ oid: OTHER_OID, type: 'commit' }) });
     await assertFails(result, 'SUBJECT_ECHO_MISMATCH', { side: 'local', method: 'getObjectType' });
+  });
+
+  it('rejects local echoes that differ only in case', async () => {
+    const fields = { ...SHA1_FIELDS, commitSha: 'a'.repeat(40) };
+    const seed = makeSeed(fields);
+    await assertFails(
+      verifyWith({ getObjectType: (oid) => ({ oid: oid.toUpperCase(), type: 'commit' }) }, seed, fields).result,
+      'SUBJECT_ECHO_MISMATCH',
+      { side: 'local', method: 'getObjectType' },
+    );
+    await assertFails(
+      verifyWith({
+        getCommitTree: (commitOid) => ({ commitOid: commitOid.toUpperCase(), treeOid: fields.treeSha }),
+      }, seed, fields).result,
+      'SUBJECT_ECHO_MISMATCH',
+      { side: 'local', method: 'getCommitTree' },
+    );
   });
 
   it('rejects a local commit-tree echo mismatch', async () => {

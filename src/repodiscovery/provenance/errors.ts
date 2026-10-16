@@ -1,11 +1,12 @@
-export const PORT_FAILURE_REASONS = [
+/** Frozen so no caller can widen the closed reason set at runtime. */
+export const PORT_FAILURE_REASONS = Object.freeze([
   'not-found',
   'unauthorized',
   'rate-limited',
   'unavailable',
   'ambiguous',
   'io-error',
-] as const;
+] as const);
 
 export type PortFailureReason = typeof PORT_FAILURE_REASONS[number];
 
