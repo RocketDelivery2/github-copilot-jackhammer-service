@@ -1,218 +1,194 @@
 name: safe-automerge
 
+# Unattended merge for explicitly allowlisted low-risk PRs only.
+# Policy: src/automerge-eligibility.ts and .github/docs/auto-merge-policy.md.
+#
+# - Never runs PR-head code: only main's evaluator is checked out.
+# - Never approves, labels, comments, uses --admin, or arms --auto.
+# - Preview by default. Merging requires the repository variable
+#   AUTOMERGE_MODE=enforce AND the PR's task type listed in
+#   AUTOMERGE_ENABLED_TASK_TYPES (comma separated: dependabot-patch, docs-only).
+# - Merges with --match-head-commit, so GitHub rejects a stale head and still
+#   enforces branch protection and required checks.
+
 on:
-  pull_request_target:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  workflow_run:
+    workflows: [test-and-build]
+    types: [completed]
+  schedule:
+    - cron: '23 * * * *'
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number to evaluate for automerge'
-        required: true
+        description: 'Evaluate a single PR number (blank = all open PRs to main)'
+        required: false
         type: string
 
-permissions:
-  pull-requests: write
-  contents: write
+permissions: {}
+
+concurrency:
+  group: safe-automerge
+  cancel-in-progress: false
 
 jobs:
-  evaluate-automerge:
-    name: Evaluate safe automerge eligibility
+  evaluate:
+    name: Evaluate unattended merge eligibility
+    if: >-
+      github.repository == 'RocketDelivery2/github-copilot-jackhammer-service' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read
+    outputs:
+      merge_candidates: ${{ steps.evaluate.outputs.merge_candidates }}
+      candidate_count: ${{ steps.evaluate.outputs.candidate_count }}
     steps:
-      - name: Resolve PR number
-        id: resolve
-        env:
-          PR_NUMBER_INPUT: ${{ github.event.inputs.pr_number }}
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          if [ -n "$PR_NUMBER_INPUT" ]; then
-            echo "pr_number=$PR_NUMBER_INPUT" >> $GITHUB_OUTPUT
-          else
-            echo "pr_number=$EVENT_PR_NUMBER" >> $GITHUB_OUTPUT
-          fi
+      - name: Checkout main (policy code only)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
 
-      - name: Evaluate automerge safety gates
-        id: gates
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Collect candidate PRs
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
-          IS_DRAFT: ${{ github.event.pull_request.draft }}
-          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_PRS_JSON: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_PR: ${{ github.event.inputs.pr_number }}
         run: |
           set -euo pipefail
-          GATE_PASS=true
-          GATE_LOG=""
-          BLOCK_REASON=""
-
-          # Fetch PR metadata
-          PR_JSON=$(gh pr view "$PR_NUMBER" \
-            --repo "$REPO" \
-            --json author,labels,isDraft,state,headRefName,reviewDecision,statusCheckRollup \
-            2>/dev/null || echo "{}")
-
-          PR_AUTHOR=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('author',{}).get('login','unknown'))" 2>/dev/null || echo "unknown")
-          PR_DRAFT=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(str(d.get('isDraft',True)).lower())" 2>/dev/null || echo "true")
-          PR_STATE=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('state','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
-          LABELS_JSON=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps([l['name'] for l in d.get('labels',[])]))" 2>/dev/null || echo "[]")
-          REVIEW_DECISION=$(echo "$PR_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('reviewDecision',''))" 2>/dev/null || echo "")
-
-          echo "PR #$PR_NUMBER: author=$PR_AUTHOR, draft=$PR_DRAFT, state=$PR_STATE, review=$REVIEW_DECISION"
-
-          # Gate 1: PR must be open
-          if [ "$PR_STATE" != "OPEN" ]; then
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 1: PR state | BLOCKED | PR is not open (state: $PR_STATE) |\n"
+          : > candidates.tsv
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            echo "$RUN_PRS_JSON" | jq -r --arg sha "$RUN_HEAD_SHA" '.[]? | [(.number|tostring), $sha] | @tsv' >> candidates.tsv
           else
-            GATE_LOG="${GATE_LOG}| Gate 1: PR state | PASS | PR is open |\n"
-          fi
-
-          # Gate 2: PR must not be draft
-          if [ "$PR_DRAFT" = "true" ]; then
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 2: draft check | BLOCKED | PR is still in draft state |\n"
-          else
-            GATE_LOG="${GATE_LOG}| Gate 2: draft check | PASS | PR is not draft |\n"
-          fi
-
-          # Gate 3: Author must be a known automation actor
-          # Note: workflows authored by improvement-pr-bot run as 'github-actions[bot]'
-          AUTOMATION_ACTORS="github-actions[bot] dependabot[bot]"
-          ACTOR_ALLOWED=false
-          for allowed in $AUTOMATION_ACTORS; do
-            if [ "$PR_AUTHOR" = "$allowed" ]; then
-              ACTOR_ALLOWED=true
-              break
-            fi
-          done
-
-          # Also allow if the 'automation' label is present (human-blessed automation PR)
-          HAS_AUTOMATION_LABEL=$(echo "$LABELS_JSON" | python3 -c "import sys,json; labels=json.load(sys.stdin); print('true' if 'automation' in labels else 'false')" 2>/dev/null || echo "false")
-
-          if [ "$ACTOR_ALLOWED" = "true" ] || [ "$HAS_AUTOMATION_LABEL" = "true" ]; then
-            GATE_LOG="${GATE_LOG}| Gate 3: automation actor | PASS | author=$PR_AUTHOR or 'automation' label present |\n"
-          else
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 3: automation actor | BLOCKED | author '$PR_AUTHOR' is not an automation actor and 'automation' label is absent |\n"
-          fi
-
-          # Gate 4: Blocking labels must not be present
-          BLOCKING_LABELS="security breaking-change do-not-merge"
-          HAS_BLOCKER=$(echo "$LABELS_JSON" | python3 -c "
-          import sys, json
-          labels = json.load(sys.stdin)
-          blockers = {'security', 'breaking-change', 'do-not-merge'}
-          found = [l for l in labels if l in blockers]
-          print(','.join(found) if found else '')
-          " 2>/dev/null || echo "")
-
-          if [ -n "$HAS_BLOCKER" ]; then
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 4: blocking labels | BLOCKED | labels present: $HAS_BLOCKER |\n"
-          else
-            GATE_LOG="${GATE_LOG}| Gate 4: blocking labels | PASS | no blocking labels |\n"
-          fi
-
-          # Gate 5: must have 'auto-merge' OR 'improvement' label (explicit opt-in)
-          HAS_MERGE_LABEL=$(echo "$LABELS_JSON" | python3 -c "
-          import sys, json
-          labels = json.load(sys.stdin)
-          optin = {'auto-merge', 'improvement'}
-          print('true' if any(l in optin for l in labels) else 'false')
-          " 2>/dev/null || echo "false")
-
-          if [ "$HAS_MERGE_LABEL" = "true" ]; then
-            GATE_LOG="${GATE_LOG}| Gate 5: merge opt-in label | PASS | auto-merge or improvement label present |\n"
-          else
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 5: merge opt-in label | BLOCKED | neither auto-merge nor improvement label present |\n"
-          fi
-
-          # Gate 6: Review decision must be APPROVED (when branch protection requires it)
-          # Note: This workflow does NOT approve PRs. It only arms auto-merge if already approved.
-          if [ "$REVIEW_DECISION" = "APPROVED" ] || [ "$REVIEW_DECISION" = "" ]; then
-            GATE_LOG="${GATE_LOG}| Gate 6: review decision | PASS | decision=$REVIEW_DECISION (GitHub will enforce required reviews) |\n"
-          else
-            GATE_PASS=false
-            GATE_LOG="${GATE_LOG}| Gate 6: review decision | BLOCKED | decision=$REVIEW_DECISION — required review not yet approved |\n"
-          fi
-
-          echo "gate_pass=$GATE_PASS" >> $GITHUB_OUTPUT
-          {
-            echo "gate_log<<EOF"
-            printf "$GATE_LOG"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
-          echo "pr_author=$PR_AUTHOR" >> $GITHUB_OUTPUT
-
-      - name: Write gate summary
-        if: always()
-        env:
-          GATE_PASS: ${{ steps.gates.outputs.gate_pass }}
-          GATE_LOG: ${{ steps.gates.outputs.gate_log }}
-          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
-        run: |
-          {
-            echo "## Safe Automerge Gate Evaluation — PR #${PR_NUMBER}"
-            echo ""
-            if [ "$GATE_PASS" = "true" ]; then
-              echo "**Decision: ✅ ALLOW** — All gates passed; arming squash automerge."
+            gh pr list --repo "$REPO" --base main --state open --limit 100 --json number,headRefOid \
+              | jq -r '.[] | [(.number|tostring), .headRefOid] | @tsv' > open.tsv
+            if [ -n "$INPUT_PR" ]; then
+              if ! [[ "$INPUT_PR" =~ ^[0-9]+$ ]]; then
+                echo "::error::pr_number must be numeric"
+                exit 1
+              fi
+              awk -F '\t' -v n="$INPUT_PR" '$1 == n' open.tsv >> candidates.tsv
             else
-              echo "**Decision: 🚫 BLOCK** — One or more gates failed; automerge NOT armed."
+              cat open.tsv >> candidates.tsv
             fi
-            echo ""
-            echo "| Gate | Result | Reason |"
-            echo "|------|--------|--------|"
-            printf "$GATE_LOG"
-            echo ""
-            echo "> **Note:** This workflow does not bypass required reviews or branch protections."
-            echo "> GitHub enforces those independently. Arming automerge only schedules the merge"
-            echo "> to occur once all required checks and reviews are satisfied."
-          } >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "Candidates:"
+          cat candidates.tsv
 
-      - name: Post informative comment when blocked
-        if: steps.gates.outputs.gate_pass == 'false'
+      - name: Evaluate candidates
+        id: evaluate
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GATE_LOG: ${{ steps.gates.outputs.gate_log }}
-          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          AUTOMERGE_EXPECTED_REPO: RocketDelivery2/github-copilot-jackhammer-service
+          AUTOMERGE_EVENT_REPO: ${{ github.repository }}
+          AUTOMERGE_ENABLED_TASK_TYPES: ${{ vars.AUTOMERGE_ENABLED_TASK_TYPES }}
+          AUTOMERGE_MODE: ${{ vars.AUTOMERGE_MODE }}
         run: |
-          COMMENT_FILE=$(mktemp)
+          # No `set -e`: one PR's evidence failure must not stop evaluation of the
+          # others. Every failure path below produces a blocked result.
+          set -uo pipefail
+          FIELDS=number,state,isDraft,isCrossRepository,author,baseRefName,baseRefOid,headRefName,headRefOid,mergeStateStatus,reviewDecision,labels,changedFiles,files,statusCheckRollup,reviews
+          BLOCKED='{"eligible":false,"enabled":false,"taskType":null,"headSha":null,"blockers":["Evidence: collection failed."],"gates":[]}'
+          fetch_raw() {
+            gh api -H 'Accept: application/vnd.github.raw+json' "repos/$REPO/contents/$1?ref=$2" > "$3"
+          }
+          : > results.jsonl
+          while IFS=$'\t' read -r -u 3 PR EXPECTED_SHA; do
+            if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+              continue
+            fi
+            WORK="evidence/$PR"
+            mkdir -p "$WORK"
+            unset AUTOMERGE_COMMITS_JSON_FILE AUTOMERGE_BASE_PACKAGE_JSON_FILE AUTOMERGE_HEAD_PACKAGE_JSON_FILE \
+              AUTOMERGE_BASE_LOCKFILE_FILE AUTOMERGE_HEAD_LOCKFILE_FILE
+            RESULT=""
+            if gh pr view "$PR" --repo "$REPO" --json "$FIELDS" > "$WORK/pr.json"; then
+              HEAD_REF=$(jq -r '.headRefName' "$WORK/pr.json")
+              HEAD_OID=$(jq -r '.headRefOid' "$WORK/pr.json")
+              BASE_OID=$(jq -r '.baseRefOid' "$WORK/pr.json")
+              if [[ "$HEAD_REF" == dependabot/npm_and_yarn/* && "$HEAD_OID" =~ ^[0-9a-f]{40}$ && "$BASE_OID" =~ ^[0-9a-f]{40}$ ]]; then
+                gh api --paginate --slurp "repos/$REPO/pulls/$PR/commits" > "$WORK/commits.json" \
+                  && export AUTOMERGE_COMMITS_JSON_FILE="$WORK/commits.json"
+                fetch_raw package.json "$BASE_OID" "$WORK/base-package.json" \
+                  && export AUTOMERGE_BASE_PACKAGE_JSON_FILE="$WORK/base-package.json"
+                fetch_raw package.json "$HEAD_OID" "$WORK/head-package.json" \
+                  && export AUTOMERGE_HEAD_PACKAGE_JSON_FILE="$WORK/head-package.json"
+                fetch_raw package-lock.json "$BASE_OID" "$WORK/base-lock.json" \
+                  && export AUTOMERGE_BASE_LOCKFILE_FILE="$WORK/base-lock.json"
+                fetch_raw package-lock.json "$HEAD_OID" "$WORK/head-lock.json" \
+                  && export AUTOMERGE_HEAD_LOCKFILE_FILE="$WORK/head-lock.json"
+              fi
+              RESULT=$(AUTOMERGE_PR_JSON_FILE="$WORK/pr.json" AUTOMERGE_EXPECTED_HEAD_SHA="$EXPECTED_SHA" \
+                node --import tsx src/automerge-eligibility-cli.ts)
+            fi
+            if ! echo "$RESULT" | jq -e 'type == "object"' > /dev/null 2>&1; then
+              RESULT="$BLOCKED"
+            fi
+            echo "$RESULT" | jq -c --arg pr "$PR" '. + {number: ($pr|tonumber)}' >> results.jsonl
+          done 3< candidates.tsv
+
+          CANDIDATES=$(jq -sc '[.[] | select(.eligible == true and .enabled == true and (.headSha | type) == "string") | {number, headSha, taskType}]' results.jsonl)
+          echo "merge_candidates=$CANDIDATES" >> "$GITHUB_OUTPUT"
+          echo "candidate_count=$(echo "$CANDIDATES" | jq 'length')" >> "$GITHUB_OUTPUT"
+
           {
-            echo "## Safe Automerge — Blocked"
+            echo "## Safe auto-merge evaluation"
             echo ""
-            echo "Automerge has **not** been armed for this PR because one or more safety gates failed."
+            echo "Mode: \`${AUTOMERGE_MODE:-preview}\` (merges only when \`enforce\`). Enabled task types: \`${AUTOMERGE_ENABLED_TASK_TYPES:-none}\`."
             echo ""
-            echo "| Gate | Result | Reason |"
-            echo "|------|--------|--------|"
-            printf '%s' "$GATE_LOG"
-            echo ""
-            echo "**To enable automerge**, ensure:"
-            echo "1. The PR is not in draft state"
-            echo "2. The PR author is an automation actor OR the \`automation\` label is present"
-            echo "3. No blocking labels (\`security\`, \`breaking-change\`, \`do-not-merge\`) are present"
-            echo "4. Either the \`auto-merge\` or \`improvement\` label is present"
-            echo "5. All required reviews are approved"
-            echo ""
-            echo "This check will re-run automatically when the PR is updated."
-            echo ""
-            echo "---"
-            echo "*Posted by the safe-automerge workflow.*"
-          } > "$COMMENT_FILE"
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$COMMENT_FILE" 2>/dev/null || true
-          rm -f "$COMMENT_FILE"
+            echo "| PR | Task type | Eligible | Enabled | Blockers |"
+            echo "|----|-----------|----------|---------|----------|"
+            jq -r '"| #\(.number) | \(.taskType // "none") | \(.eligible) | \(.enabled) | \(.blockers | join("; ") | gsub("\\|"; "/")) |"' results.jsonl
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Arm squash automerge
-        if: steps.gates.outputs.gate_pass == 'true'
+  merge:
+    name: Merge eligible PRs (exact head)
+    needs: evaluate
+    if: >-
+      vars.AUTOMERGE_MODE == 'enforce' &&
+      needs.evaluate.outputs.candidate_count != '' &&
+      needs.evaluate.outputs.candidate_count != '0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge with exact head match
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          CANDIDATES: ${{ needs.evaluate.outputs.merge_candidates }}
         run: |
-          gh pr merge --auto --squash --delete-branch "$PR_NUMBER" --repo "$REPO" \
-            || echo "Automerge already enabled or PR already merged; no action needed."
-          echo "Automerge armed for PR #$PR_NUMBER (squash). GitHub will merge when all required checks and reviews pass."
+          set -uo pipefail
+          FAILED=0
+          while IFS=$'\t' read -r -u 3 PR SHA TASK; do
+            if ! [[ "$PR" =~ ^[0-9]+$ && "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Malformed merge candidate; skipping."
+              FAILED=1
+              continue
+            fi
+            echo "Merging PR #$PR ($TASK) at $SHA"
+            if gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$SHA"; then
+              echo "- Merged #$PR ($TASK) at \`$SHA\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- Merge of #$PR refused by GitHub (head moved or protection unmet)" >> "$GITHUB_STEP_SUMMARY"
+              FAILED=1
+            fi
+          done 3< <(echo "$CANDIDATES" | jq -r '.[] | [(.number|tostring), .headSha, .taskType] | @tsv')
+          exit "$FAILED"

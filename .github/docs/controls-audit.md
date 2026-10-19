@@ -20,19 +20,26 @@ The audit expects all of the following:
 5. Force pushes are disabled.
 6. Branch deletions are disabled.
 
+If the workflow token cannot read the protection settings, the audit reports one
+failure stating that the rules are UNKNOWN, rather than reporting each rule as
+disabled.
+
 ### Workflow guardrails
 
-The audit validates both:
+The audit validates `.github/workflows/safe-automerge.yml`, the only workflow
+allowed to merge PRs:
 
-- `.github/workflows/auto-merge.yml`
-- `.github/workflows/dependabot-auto-merge.yml`
+1. Merges are pinned to the evaluated head (`--match-head-commit`).
+2. Merging is gated on the owner variable `AUTOMERGE_MODE == 'enforce'`.
+3. Eligibility comes from the shared policy (`src/automerge-eligibility-cli.ts`).
+4. It does not run on `pull_request` or `pull_request_target` events.
 
-Expected controls in each workflow:
+It also scans every other workflow and fails if any of them:
 
-1. Deny-label blocking for `security`, `breaking-change`, and `do-not-merge`.
-2. Guarded merge execution path (`if: steps.gates.outputs.gate_pass == 'true'`).
-3. Decision logging to workflow summary (`$GITHUB_STEP_SUMMARY`).
-4. No unconditional merge path (`gh pr merge` commands must remain gated).
+1. merges a PR (`gh pr merge`),
+2. submits a PR approval,
+3. merges with `--admin`, or
+4. arms an `--auto` merge.
 
 ## Drift behavior
 

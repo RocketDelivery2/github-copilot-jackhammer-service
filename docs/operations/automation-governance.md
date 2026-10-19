@@ -16,6 +16,7 @@ These are the operations this repository intentionally keeps manual or gated.
 ## Gated automation only
 
 - PR approval, merge, branch deletion, and issue closure only run when the explicit full-autopilot flags are enabled.
+- Workflow-driven unattended merge is limited to `safe-automerge.yml`, the allowlisted task types in `.github/docs/auto-merge-policy.md`, and owner activation through `AUTOMERGE_MODE=enforce`. No workflow approves PRs.
 - Scheduled runs stay preview-first unless the environment is configured to permit mutation.
 - Failed or ambiguous runs should stop and surface the blocker instead of guessing.
 
