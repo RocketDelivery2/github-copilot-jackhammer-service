@@ -1,123 +1,38 @@
-# Auto-approve and auto-merge policy
+# Auto-merge policy
 
-## Scope
+## Authority boundary
 
-This repository uses three workflows for low-risk PR automation:
+The workflows in this document may request GitHub's native auto-merge only after every policy gate passes. They never call an admin/bypass merge. GitHub branch protection and repository settings remain independent required controls; this code does not configure or prove those settings.
 
-1. `.github/workflows/auto-merge.yml`
-2. `.github/workflows/dependabot-auto-approve.yml`
-3. `.github/workflows/dependabot-auto-merge.yml`
+`.github/workflows/auto-merge.yml` only opens a **draft** PR for a newly created branch. It has no approval or merge permission. `.github/workflows/safe-automerge.yml` is the general policy gate for non-Dependabot branches. `.github/workflows/dependabot-auto-merge.yml` handles only `dependabot/` head branches, adds the Dependabot update-type gate, and uses the same pure policy evaluator. The general workflow skips `dependabot/` head branches, keeping the populations disjoint.
 
-The `auto-merge.yml` workflow only arms squash auto-merge for approved bot-authored PRs.
-Human-authored PRs are always blocked, even if they carry the `auto-merge` label.
-`dependabot-auto-merge.yml` handles Dependabot separately with the same merge-readiness checks.
+There is no label-based human or `github-actions[bot]` author bypass. The explicit `auto-merge` label is an opt-in signal, not an override for any other gate. `no-auto-merge`, `security`, `breaking-change`, and `do-not-merge` always block.
 
-Automation is deterministic and fail-closed. If any required gate fails, no new approval or auto-merge arming occurs.
+## Shared fail-closed gates
 
-## Trigger model
+The pure `src/auto-merge-policy.ts` evaluator requires:
 
-### `auto-merge.yml`
+1. Well-formed PR metadata; missing or malformed values block.
+2. The PR author and latest head-commit author are the same exact allowlisted bot: `dependabot[bot]` or `renovate[bot]`. `github-actions[bot]` is not an allowed author.
+3. The head branch uses the corresponding `dependabot/` or `renovate/` prefix.
+4. The PR is open, ready (not draft), and targets `main`.
+5. Every changed path is in the Markdown/documentation/test allowlist. `.github/**`, package manifests and lockfiles, `src/config.ts`, `src/github.ts`, path traversal, and all other files are denied. The Dependabot-only exception permits package manifests/lockfiles only for direct development-dependency patch/minor updates; it does not permit application source changes.
+6. No deny label is present. The general workflow also requires the `auto-merge` opt-in label.
+7. `reviewDecision` is exactly `APPROVED` and at least one approving review is from a non-author, non-bot identity.
+8. `test-and-build` and `Analyze (javascript-typescript)` have completed successfully for the exact head SHA.
+9. GitHub reports `mergeStateStatus` exactly `CLEAN`.
+10. Dependabot mode additionally requires fetch-metadata to report a direct development dependency patch or minor update. Missing metadata and major/other update types block.
 
-- `pull_request` on `main` for: `opened`, `synchronize`, `reopened`, `ready_for_review`, `labeled`, `unlabeled`
-- `create` for branch creation (opens a draft PR to `main` when one does not already exist)
+All merge-arm steps require the evaluator's `do_arm == true` output. The evaluator returns `doArm: false` if native auto-merge is already enabled, making repeated events a no-op.
 
-### Dependabot workflows
+## Event and reporting behavior
 
-- `pull_request_target` for: `opened`, `synchronize`, `reopened`, `labeled`, `unlabeled`, `ready_for_review`
+The `safe-automerge` and `dependabot-auto-merge` workflows evaluate `pull_request_target` open/synchronize/reopen/ready/label events, completed `check_run` events, and manual `workflow_dispatch` on `main`. They do not listen to `pull_request`, `pull_request_review`, or `pull_request_review_comment` events. GitHub does not trigger these workflows for `check_run` events created by GitHub Actions; after a push, re-arming therefore requires a label event or manual `workflow_dispatch`. Decisions are written to the workflow run summary; the safe-automerge workflow does not post PR comments.
 
-## Shared deny labels
+If policy evaluation returns `allowed: false` while GitHub reports native auto-merge already enabled by `github-actions[bot]`, the workflow runs `gh pr merge --disable-auto` for that PR. If gate evaluation did not complete successfully, it re-reads the PR's auto-merge request before considering disarm. The step summary records whether disarming succeeded or failed; a failed disarm also fails the workflow step. Auto-merge requests enabled by other actors are not disabled by these workflows.
 
-All workflows hard-block when any of these labels are present:
+The Dependabot auto-approve workflow is a separate control and is not changed here. Its approval is not sufficient for this policy: the merge evaluator requires an independent non-bot approval. Review that workflow separately before broadening unattended dependency automation.
 
-- `security`
-- `breaking-change`
-- `do-not-merge`
-- `no-auto-merge`
+## Required owner-managed controls
 
-## Safety gates
-
-### `auto-merge.yml` gates (all must pass)
-
-| Gate | Requirement |
-|---|---|
-| Repository match | Workflow must execute in `RocketDelivery2/github-copilot-jackhammer-service` |
-| Open/ready state | PR must be `OPEN` and not draft |
-| Base branch scope | Base branch must be `main` |
-| Head branch scope | Head branch must match one of: `dependabot/*`, `automation/*`, `autofix/*`, `chore/*`, `docs/*` |
-| Actor and trust | PR author must be `dependabot[bot]`, or actor/author must be trusted (`OWNER`, `MEMBER`, `COLLABORATOR`) with actor in trusted set (`github-actions[bot]`, `dependabot[bot]`, `renovate[bot]`) or actor equal to PR author |
-| Low-risk signal | PR must include one of `auto-merge`, `low-risk`, `dependencies`, `chore`, `documentation` labels, or be authored by `dependabot[bot]` |
-| Deny labels | None of the deny labels may be present |
-
-If gates pass, the workflow performs idempotent actions:
-
-- approve only when `github-actions[bot]` has not already approved
-- arm auto-merge only when auto-merge is not already armed
-
-### Dependabot workflows gates (all must pass)
-
-Both dependabot workflows require:
-
-| Gate | Requirement |
-|---|---|
-| Repository match | Workflow must execute in `RocketDelivery2/github-copilot-jackhammer-service` |
-| Open/ready state | PR must be `OPEN` and not draft |
-| Actor check | PR author must be `dependabot[bot]` |
-| Branch scope | Head branch must match `dependabot/*` |
-| Deny labels | None of the deny labels may be present |
-
-Idempotency behavior:
-
-- `dependabot-auto-approve.yml`: no-op when `github-actions[bot]` approval already exists
-- `dependabot-auto-merge.yml`: no-op when auto-merge is already armed
-
-## Audit output
-
-Every run writes an explicit policy table to `GITHUB_STEP_SUMMARY` including:
-
-- each gate name
-- PASS/BLOCKED result
-- deterministic reason text
-- final decision (`ALLOW`, `BLOCK`, or `NOOP`)
-- idempotency note explaining skipped duplicate operations when applicable
-
-| Scenario | Before (unsafe) | After (hardened) |
-|----------|-----------------|-----------------|
-| New branch pushed | Opens non-draft PR, arms merge immediately | Opens **draft** PR; no merge armed |
-| Human PR with `auto-merge` label | Auto-approves + arms squash merge | Gate 1 blocks; merge NOT armed |
-| Bot PR without `auto-merge` label | Arms merge | Gate 2 blocks; merge NOT armed |
-| Bot PR with `auto-merge` label, not draft | Arms merge | All gates evaluated; arms only if checks/reviews are green |
-| Draft bot PR with `auto-merge` label | Arms merge | Gate 3 blocks; merge NOT armed |
-| PR with `security` label | Arms merge | Gate 4 blocks; merge NOT armed |
-| Dependabot PR | Arms merge via separate workflow | Handled by `dependabot-auto-approve.yml` + `dependabot-auto-merge.yml` |
-| Gate decision visibility | None | Written to step summary on every evaluation |
-
-## Operational notes
-
-- Workflow automation does not bypass branch protection, required checks, required reviews, or repository/org policy.
-- Emergency disable remains available with GitHub Actions workflow disable.
-
-The following bot actors are supported by the policy:
-
-- `dependabot[bot]` (via the dedicated Dependabot workflow)
-- Any other approved bot account that carries the `auto-merge` label
-
-Human users are never eligible for auto-merge.
-
-## Strongly Recommended: Add Branch Protection
-
-This workflow does not substitute for branch protection. Without it, a passing workflow can still produce an unreviewed merge. Recommended settings for `main`:
-
-- Require at least 1 approving review
-- Require status checks: `test-and-build`, `CodeQL`
-- Restrict force pushes and deletions
-
-To apply via CLI (requires admin permission):
-
-```bash
-gh api repos/RocketDelivery2/github-copilot-jackhammer-service/branches/main/protection \
-  --method PUT \
-  --field required_status_checks='{"strict":true,"contexts":["test-and-build"]}' \
-  --field enforce_admins=false \
-  --field required_pull_request_reviews='{"required_approving_review_count":1}' \
-  --field restrictions=null
-```
+The workflow code cannot substitute for GitHub repository settings. A repository owner should independently configure and verify required approving reviews, required exact status checks, strict up-to-date branches, enforcement for administrators, and disabled force-push/deletion. This PR does not change those settings. Do not use `enforce_admins: false` as remediation guidance.
