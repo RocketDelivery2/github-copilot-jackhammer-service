@@ -9,6 +9,7 @@ import {
   defaultAcquireRunLock,
   defaultLoadDiscussionsState,
   defaultSaveDiscussionsStateAtomically,
+  resolveDiscussionCategorySlug,
   runDiscussionWriter,
   type ActivityFile,
   type DiscussionWriterDependencies,
@@ -69,6 +70,10 @@ function createDependencies(input: {
 }
 
 describe('discussion writer', () => {
+  it('falls back to the configured category when the scheduled workflow input is empty', () => {
+    assert.equal(resolveDiscussionCategorySlug(undefined, '', 'general'), 'general');
+  });
+
   it('disabled feature performs no work', async () => {
     const result = await runDiscussionWriter(createDependencies(), { enabled: false });
     assert.equal(result.status, 'disabled');

@@ -146,6 +146,13 @@ export type DiscussionWriterResult = {
   createdDiscussion?: CreatedDiscussion;
 };
 
+export function resolveDiscussionCategorySlug(
+  commandLineValue?: string,
+  workflowInputValue?: string,
+  configuredValue?: string,
+): string {
+  return commandLineValue || workflowInputValue || configuredValue || 'general';
+}
 
 function parseEnvBoolean(value: string | undefined): boolean {
   if (!value) {

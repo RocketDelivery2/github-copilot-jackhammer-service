@@ -240,6 +240,11 @@ The `discussion-writer` workflow must run with:
 - `pull-requests: read`
 
 Do not grant `contents: write`, `actions: write`, or broad `write-all` permissions.
+The workflow passes its scoped `GITHUB_TOKEN` only to the generation step. When
+discussion generation is disabled, it exits before loading the token or calling
+GitHub; enabled runs require that token for repository evidence and publishing.
+The discussion writer uses deterministic templates and does not require
+`OPENAI_API_KEY`.
 
 ### Preview-only configuration
 
