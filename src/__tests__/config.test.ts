@@ -23,6 +23,7 @@ describe('config', () => {
 
       assert.equal(parsed.ADAPTIVE_QUEUE_ENABLED, false);
       assert.equal(parsed.DRY_RUN, true);
+      assert.equal(parsed.BRAIN_FALLBACK_ENABLED, true);
       assert.equal(parseConfig({
         OPENAI_API_KEY: 'test-openai-key',
         GITHUB_TOKEN: 'test-github-token',
