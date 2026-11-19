@@ -30,7 +30,9 @@ The audit validates both:
 Expected controls in each workflow:
 
 1. Deny-label blocking for `security`, `breaking-change`, and `do-not-merge`.
-2. Guarded merge execution path (`if: steps.gates.outputs.gate_pass == 'true'`).
+2. Each `gh pr merge` command is in a step guarded by either the `gate_pass`
+   output or the derived `do_arm` output. For `do_arm`, the audit confirms it
+   defaults to false and is enabled only when all safety gates pass.
 3. Decision logging to workflow summary (`$GITHUB_STEP_SUMMARY`).
 4. No unconditional merge path (`gh pr merge` commands must remain gated).
 

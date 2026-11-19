@@ -1,27 +1,18 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import 'dotenv/config';
 import yargs from 'yargs/yargs';
 import { hideBin } from 'yargs/helpers';
-import { config } from './config.js';
 import {
   buildPreviewMarkdown,
   runDiscussionWriter,
   defaultLoadDiscussionsState,
   defaultSaveDiscussionsStateAtomically,
   defaultAcquireRunLock,
+  resolveDiscussionCategorySlug,
   type ActivityFile,
   type RepositoryActivity,
 } from './discussion-writer.js';
-import {
-  createRepositoryDiscussion,
-  getLatestPublishedRelease,
-  listClosedIssues,
-  listMergedPullRequests,
-  listRecentCommits,
-  listRoadmapIssues,
-  readRecentDiscussions,
-  resolveDiscussionCategoryBySlugOrName,
-} from './github.js';
 
 const argv = yargs(hideBin(process.argv))
   .option('discussion-type', {
@@ -32,25 +23,6 @@ const argv = yargs(hideBin(process.argv))
   .option('auto-publish', { type: 'boolean' })
   .option('activity-window-days', { type: 'number' })
   .parseSync();
-
-async function collectRepositoryActivity(windowDays: number): Promise<RepositoryActivity> {
-  const [release, mergedPullRequests, closedIssues, commits, roadmapIssues] = await Promise.all([
-    getLatestPublishedRelease(windowDays),
-    listMergedPullRequests(windowDays),
-    listClosedIssues(windowDays),
-    listRecentCommits(windowDays),
-    listRoadmapIssues(windowDays),
-  ]);
-
-  return {
-    releases: release ? [release] : [],
-    mergedPullRequests,
-    closedIssues,
-    commits,
-    roadmapIssues,
-    docsFiles: await readRepositoryEvidenceFiles(),
-  };
-}
 
 async function readRepositoryEvidenceFiles(): Promise<ActivityFile[]> {
   const root = process.cwd();
@@ -140,20 +112,47 @@ async function writePreviewArtifacts(markdown: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (!config.DISCUSSIONS_ENABLED) {
-    throw new Error('Discussions are disabled (DISCUSSIONS_ENABLED=false).');
+  if (!['true', '1', 'yes'].includes(process.env.DISCUSSIONS_ENABLED?.toLowerCase() ?? '')) {
+    console.log('Discussion generation is disabled by configuration.');
+    return;
   }
+
+  const github = await import('./discussion-writer-github.js');
+  const collectRepositoryActivity = async (windowDays: number): Promise<RepositoryActivity> => {
+    const [release, mergedPullRequests, closedIssues, commits, roadmapIssues] = await Promise.all([
+      github.getLatestPublishedRelease(windowDays),
+      github.listMergedPullRequests(windowDays),
+      github.listClosedIssues(windowDays),
+      github.listRecentCommits(windowDays),
+      github.listRoadmapIssues(windowDays),
+    ]);
+
+    return {
+      releases: release ? [release] : [],
+      mergedPullRequests,
+      closedIssues,
+      commits,
+      roadmapIssues,
+      docsFiles: await readRepositoryEvidenceFiles(),
+    };
+  };
 
   const workflowAutoPublish = parseWorkflowInputBoolean(process.env.INPUT_AUTO_PUBLISH);
   const workflowWindowDays = process.env.INPUT_ACTIVITY_WINDOW_DAYS ? Number(process.env.INPUT_ACTIVITY_WINDOW_DAYS) : undefined;
   const requestedDiscussionType = argv['discussion-type'] ?? process.env.INPUT_DISCUSSION_TYPE ?? '';
-  const defaultType = parseDiscussionType(String(requestedDiscussionType)) ?? config.DISCUSSIONS_DEFAULT_TYPE;
-  const categorySlug = argv['discussion-category'] ?? process.env.INPUT_CATEGORY ?? config.DISCUSSIONS_CATEGORY_SLUG;
+  const defaultType = parseDiscussionType(String(requestedDiscussionType))
+    ?? parseDiscussionType(process.env.DISCUSSIONS_DEFAULT_TYPE)
+    ?? 'auto';
+  const categorySlug = resolveDiscussionCategorySlug(
+    argv['discussion-category'],
+    process.env.INPUT_CATEGORY,
+    process.env.DISCUSSIONS_CATEGORY_SLUG,
+  );
 
   const result = await runDiscussionWriter({
-    resolveDiscussionCategory: resolveDiscussionCategoryBySlugOrName,
-    readRecentDiscussions,
-    createDiscussion: createRepositoryDiscussion,
+    resolveDiscussionCategory: github.resolveDiscussionCategoryBySlugOrName,
+    readRecentDiscussions: github.readRecentDiscussions,
+    createDiscussion: github.createRepositoryDiscussion,
     collectRepositoryActivity,
     readRepositoryEvidenceFiles,
     now: () => new Date(),

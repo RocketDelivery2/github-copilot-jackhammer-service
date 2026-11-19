@@ -57,35 +57,11 @@ jobs:
           echo "" >> "$REPORT_FILE"
           echo "### Workflow controls" >> "$REPORT_FILE"
 
-          check_workflow() {
-            local file="$1"
-            local has_deny has_guard has_summary merge_count guard_count
-
-            if [ ! -f "$file" ]; then
-              fail "$file missing"
-              return
-            fi
-
-            has_deny=$(grep -E 'security|breaking-change|do-not-merge' "$file" >/dev/null && echo true || echo false)
-            has_guard=$(grep -E "if:\s*steps\.gates\.outputs\.gate_pass\s*==\s*'true'" "$file" >/dev/null && echo true || echo false)
-            has_summary=$(grep -E '\$GITHUB_STEP_SUMMARY|summary' "$file" >/dev/null && echo true || echo false)
-
-            merge_count=$(grep -c 'gh pr merge' "$file" || true)
-            guard_count=$(grep -Ec "if:\s*steps\.gates\.outputs\.gate_pass\s*==\s*'true'" "$file" || true)
-
-            [ "$has_deny" = "true" ] && pass "$file deny-label blocking present" || fail "$file deny-label blocking missing"
-            [ "$has_guard" = "true" ] && pass "$file guarded merge condition present" || fail "$file guarded merge condition missing"
-            [ "$has_summary" = "true" ] && pass "$file step-summary logging present" || fail "$file step-summary logging missing"
-
-            if [ "$merge_count" -gt "$guard_count" ]; then
-              fail "$file has potential unconditional merge path (merge_count=$merge_count guard_count=$guard_count)"
-            else
-              pass "$file has no unconditional merge path"
-            fi
-          }
-
-          check_workflow ".github/workflows/auto-merge.yml"
-          check_workflow ".github/workflows/dependabot-auto-merge.yml"
+          if ! node scripts/audit-merge-workflows.mjs \
+            ".github/workflows/auto-merge.yml" \
+            ".github/workflows/dependabot-auto-merge.yml" >> "$REPORT_FILE"; then
+            FAIL=1
+          fi
 
           echo "" >> "$REPORT_FILE"
           if [ "$FAIL" -eq 0 ]; then

@@ -146,6 +146,13 @@ export type DiscussionWriterResult = {
   createdDiscussion?: CreatedDiscussion;
 };
 
+export function resolveDiscussionCategorySlug(
+  commandLineValue?: string,
+  workflowInputValue?: string,
+  configuredValue?: string,
+): string {
+  return commandLineValue || workflowInputValue || configuredValue || 'general';
+}
 
 function parseEnvBoolean(value: string | undefined): boolean {
   if (!value) {
@@ -410,6 +417,17 @@ function selectHashtags(type: DiscussionType, inventory: readonly string[], incl
   return finalHashtags;
 }
 
+const MARKDOWN_ESCAPED_CHARACTERS = new Set([
+  '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '<', '>', '|', '~',
+]);
+
+function escapeMarkdownTitle(title: string): string {
+  const normalizedTitle = title.replace(/\s+/g, ' ').trim();
+  return [...normalizedTitle]
+    .map(character => MARKDOWN_ESCAPED_CHARACTERS.has(character) ? `\\${character}` : character)
+    .join('');
+}
+
 function buildMarkdownBody(
   type: DiscussionType,
   activity: RepositoryActivity,
@@ -421,15 +439,15 @@ function buildMarkdownBody(
   const roadmapIssues = activity.roadmapIssues.slice(0, 6);
 
   const priorities = mergedPulls.length > 0
-    ? mergedPulls.map(pr => `- ${pr.title} ([#${pr.number}](${pr.url}))`).join('\n')
+    ? mergedPulls.map(pr => `- ${escapeMarkdownTitle(pr.title)} ([#${pr.number}](${pr.url}))`).join('\n')
     : '- No merged pull requests were selected in this window.';
 
   const issueSummary = closedIssues.length > 0
-    ? closedIssues.map(issue => `- ${issue.title} ([#${issue.number}](${issue.url}))`).join('\n')
+    ? closedIssues.map(issue => `- ${escapeMarkdownTitle(issue.title)} ([#${issue.number}](${issue.url}))`).join('\n')
     : '- No completed issues were selected in this window.';
 
   const roadmapSummary = roadmapIssues.length > 0
-    ? roadmapIssues.map(issue => `- ${issue.title} ([#${issue.number}](${issue.url}))`).join('\n')
+    ? roadmapIssues.map(issue => `- ${escapeMarkdownTitle(issue.title)} ([#${issue.number}](${issue.url}))`).join('\n')
     : '- No roadmap-tagged issues were selected in this window.';
 
   const technicalQuestion = 'What additional repository-safety checks or discussion-quality gates should be added before enabling wider automation?';
