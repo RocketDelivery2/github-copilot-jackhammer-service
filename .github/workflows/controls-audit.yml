@@ -25,75 +25,133 @@ jobs:
           set -euo pipefail
 
           FAIL=0
+          UNVERIFIED=0
           REPORT_FILE=controls-audit-report.md
           : > "$REPORT_FILE"
 
           pass() { echo "- PASS: $1" >> "$REPORT_FILE"; }
           fail() { echo "- FAIL: $1" >> "$REPORT_FILE"; FAIL=1; }
+          unknown() { echo "- UNKNOWN: $1" >> "$REPORT_FILE"; UNVERIFIED=1; }
 
           echo "## Controls audit report" >> "$REPORT_FILE"
           echo "" >> "$REPORT_FILE"
           echo "### Branch protection: main" >> "$REPORT_FILE"
 
-          BP_JSON=$(gh api "repos/$REPO/branches/main/protection" 2>/dev/null || true)
-          if [ -z "$BP_JSON" ]; then
-            fail "Unable to read branch protection for main (missing protection or insufficient permissions)."
-          else
-            PR_REQUIRED=$(echo "$BP_JSON" | jq 'has("required_pull_request_reviews") and (.required_pull_request_reviews.required_approving_review_count >= 1)')
-            STRICT_UPTODATE=$(echo "$BP_JSON" | jq '.required_status_checks.strict == true')
-            HAS_TEST_BUILD=$(echo "$BP_JSON" | jq '(.required_status_checks.contexts // []) | index("test-and-build") != null')
-            HAS_CODEQL=$(echo "$BP_JSON" | jq '(.required_status_checks.contexts // []) | index("CodeQL") != null')
-            FORCE_PUSH_DISABLED=$(echo "$BP_JSON" | jq '.allow_force_pushes.enabled == false')
-            DELETIONS_DISABLED=$(echo "$BP_JSON" | jq '.allow_deletions.enabled == false')
+          BP_ERROR_FILE=$(mktemp)
+          set +e
+          BP_JSON=$(gh api "repos/$REPO/branches/main/protection" 2>"$BP_ERROR_FILE")
+          BP_EXIT=$?
+          set -e
+          if [ "$BP_EXIT" -eq 0 ]; then
+            PR_REQUIRED=$(jq 'has("required_pull_request_reviews") and (.required_pull_request_reviews.required_approving_review_count >= 1)' <<<"$BP_JSON")
+            STRICT_UPTODATE=$(jq '.required_status_checks.strict == true' <<<"$BP_JSON")
+            HAS_TEST_BUILD=$(jq '(.required_status_checks.contexts // []) | index("test-and-build") != null' <<<"$BP_JSON")
+            HAS_CODEQL=$(jq '(.required_status_checks.contexts // []) | index("Analyze (javascript-typescript)") != null' <<<"$BP_JSON")
+            FORCE_PUSH_DISABLED=$(jq '.allow_force_pushes.enabled == false' <<<"$BP_JSON")
+            DELETIONS_DISABLED=$(jq '.allow_deletions.enabled == false' <<<"$BP_JSON")
 
             [ "$PR_REQUIRED" = "true" ] && pass "Require PR + >=1 approving review enabled" || fail "Require PR + >=1 approving review not enforced"
             [ "$STRICT_UPTODATE" = "true" ] && pass "Require branches up to date enabled" || fail "Require branches up to date is disabled"
             [ "$HAS_TEST_BUILD" = "true" ] && pass "Required check includes test-and-build" || fail "Required check missing: test-and-build"
-            [ "$HAS_CODEQL" = "true" ] && pass "Required check includes CodeQL" || fail "Required check missing: CodeQL"
+            [ "$HAS_CODEQL" = "true" ] && pass "Required check includes Analyze (javascript-typescript)" || fail "Required check missing: Analyze (javascript-typescript)"
             [ "$FORCE_PUSH_DISABLED" = "true" ] && pass "Force pushes disabled" || fail "Force pushes are allowed"
             [ "$DELETIONS_DISABLED" = "true" ] && pass "Branch deletions disabled" || fail "Branch deletions are allowed"
+          elif grep -qiE 'HTTP 403|403 Forbidden|Resource not accessible by integration' "$BP_ERROR_FILE"; then
+            unknown "GitHub returned HTTP 403 for the branch-protection endpoint; settings were not readable and are not classified as drift."
+          else
+            unknown "Branch-protection API request failed with a non-403 error; settings could not be verified."
           fi
+          rm -f "$BP_ERROR_FILE"
 
           echo "" >> "$REPORT_FILE"
           echo "### Workflow controls" >> "$REPORT_FILE"
 
-          check_workflow() {
+          check_arm_workflow() {
             local file="$1"
-            local has_deny has_guard has_summary merge_count guard_count
+            local has_deny has_guard has_summary arm_count guard_count
 
             if [ ! -f "$file" ]; then
               fail "$file missing"
               return
             fi
 
-            has_deny=$(grep -E 'security|breaking-change|do-not-merge' "$file" >/dev/null && echo true || echo false)
-            has_guard=$(grep -E "if:\s*steps\.gates\.outputs\.gate_pass\s*==\s*'true'" "$file" >/dev/null && echo true || echo false)
-            has_summary=$(grep -E '\$GITHUB_STEP_SUMMARY|summary' "$file" >/dev/null && echo true || echo false)
+            if grep -q 'no-auto-merge' "$file" || grep -q "no-auto-merge" src/auto-merge-policy.ts; then has_deny=true; else has_deny=false; fi
+            grep -q "steps.gates.outputs.do_arm == 'true'" "$file" && has_guard=true || has_guard=false
+            grep -q '\$GITHUB_STEP_SUMMARY' "$file" && has_summary=true || has_summary=false
+            arm_count=$(grep -c 'gh pr merge' "$file" || true)
+            guard_count=$(grep -c "steps.gates.outputs.do_arm == 'true'" "$file" || true)
 
-            merge_count=$(grep -c 'gh pr merge' "$file" || true)
-            guard_count=$(grep -Ec "if:\s*steps\.gates\.outputs\.gate_pass\s*==\s*'true'" "$file" || true)
-
-            [ "$has_deny" = "true" ] && pass "$file deny-label blocking present" || fail "$file deny-label blocking missing"
-            [ "$has_guard" = "true" ] && pass "$file guarded merge condition present" || fail "$file guarded merge condition missing"
-            [ "$has_summary" = "true" ] && pass "$file step-summary logging present" || fail "$file step-summary logging missing"
-
-            if [ "$merge_count" -gt "$guard_count" ]; then
-              fail "$file has potential unconditional merge path (merge_count=$merge_count guard_count=$guard_count)"
+            [ "$has_deny" = "true" ] && pass "$file blocks the no-auto-merge deny label" || fail "$file is missing no-auto-merge blocking"
+            [ "$has_guard" = "true" ] && pass "$file has a do_arm output guard" || fail "$file is missing the do_arm guard"
+            [ "$has_summary" = "true" ] && pass "$file writes a gate summary" || fail "$file is missing step-summary logging"
+            if [ "$arm_count" -gt 0 ] && [ "$arm_count" -le "$guard_count" ]; then
+              pass "$file has no unguarded native merge command"
             else
-              pass "$file has no unconditional merge path"
+              fail "$file has an unguarded or missing native merge gate (arm_count=$arm_count guard_count=$guard_count)"
             fi
           }
 
-          check_workflow ".github/workflows/auto-merge.yml"
-          check_workflow ".github/workflows/dependabot-auto-merge.yml"
+          check_arm_workflow ".github/workflows/safe-automerge.yml"
+          check_arm_workflow ".github/workflows/dependabot-auto-merge.yml"
+
+          if grep -q 'gh pr comment' .github/workflows/safe-automerge.yml; then
+            fail ".github/workflows/safe-automerge.yml posts PR comments instead of reporting only in the run summary"
+          else
+            pass ".github/workflows/safe-automerge.yml does not post PR comments"
+          fi
+
+          if grep -qE 'automation.*label|HAS_AUTOMATION_LABEL' .github/workflows/safe-automerge.yml; then
+            fail ".github/workflows/safe-automerge.yml contains a label-based automation author bypass"
+          else
+            pass ".github/workflows/safe-automerge.yml has no automation-label author bypass"
+          fi
+
+          if grep -qE 'gh pr review .*--approve|gh pr merge' ".github/workflows/auto-merge.yml"; then
+            fail ".github/workflows/auto-merge.yml still contains approval or merge authority"
+          else
+            pass ".github/workflows/auto-merge.yml only opens draft PRs; it cannot approve or merge"
+          fi
+
+          for required_literal in \
+            'dependabot[bot]' \
+            'renovate[bot]' \
+            'AUTO_MERGE_APPROVED_BOT_AUTHORS' \
+            'AUTO_MERGE_REQUIRED_CHECKS' \
+            'headCommitAuthor' \
+            'headSha' \
+            'changedFileCount' \
+            'isAllowedPath' \
+            'Analyze (javascript-typescript)' \
+            'src/config.ts' \
+            'src/github.ts' \
+            'no-auto-merge'; do
+            if grep -Fq "$required_literal" .github/workflows/safe-automerge.yml || grep -Fq "$required_literal" src/auto-merge-policy.ts; then
+              pass "safe-automerge policy includes $required_literal"
+            else
+              fail "safe-automerge policy missing $required_literal"
+            fi
+          done
+
+          if grep -q 'dependabot/fetch-metadata@v2' .github/workflows/dependabot-auto-merge.yml \
+            && grep -q 'run: npm ci' .github/workflows/dependabot-auto-merge.yml; then
+            pass "Dependabot workflow installs locked policy dependencies and reads update metadata"
+          else
+            fail "Dependabot workflow is missing npm ci or fetch-metadata"
+          fi
 
           echo "" >> "$REPORT_FILE"
-          if [ "$FAIL" -eq 0 ]; then
+          if [ "$FAIL" -eq 0 ] && [ "$UNVERIFIED" -eq 0 ]; then
             echo "Audit result: PASS" >> "$REPORT_FILE"
             echo "drift=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Audit result: FAIL" >> "$REPORT_FILE"
+            echo "unverified=false" >> "$GITHUB_OUTPUT"
+          elif [ "$FAIL" -gt 0 ]; then
+            echo "Audit result: DRIFT" >> "$REPORT_FILE"
             echo "drift=true" >> "$GITHUB_OUTPUT"
+            echo "unverified=$([ "$UNVERIFIED" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          else
+            echo "Audit result: INCOMPLETE (controls could not be verified)" >> "$REPORT_FILE"
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "unverified=true" >> "$GITHUB_OUTPUT"
           fi
 
           cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
@@ -116,7 +174,6 @@ jobs:
             });
 
             const existing = openIssues.data.find(i => i.title === title);
-
             const body = [
               'Automated controls audit detected configuration drift.',
               '',
@@ -128,24 +185,20 @@ jobs:
             ].join('\n');
 
             if (existing) {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: existing.number,
-                body
-              });
+              await github.rest.issues.createComment({ owner, repo, issue_number: existing.number, body });
             } else {
-              await github.rest.issues.create({
-                owner,
-                repo,
-                title,
-                labels: ['controls-audit'],
-                body
-              });
+              await github.rest.issues.create({ owner, repo, title, labels: ['controls-audit'], body });
             }
 
-      - name: Fail loudly on drift
-        if: steps.audit.outputs.drift == 'true'
+      - name: Fail on drift or unverifiable controls
+        if: steps.audit.outputs.drift == 'true' || steps.audit.outputs.unverified == 'true'
+        env:
+          DRIFT: ${{ steps.audit.outputs.drift }}
+          UNVERIFIED: ${{ steps.audit.outputs.unverified }}
         run: |
-          echo "Controls audit drift detected. See workflow summary and controls-audit issue."
+          if [ "$UNVERIFIED" = "true" ]; then
+            echo "Some controls are UNKNOWN because GitHub denied or failed the settings read. See summary."
+          elif [ "$DRIFT" = "true" ]; then
+            echo "Controls drift detected. See workflow summary and controls-audit issue."
+          fi
           exit 1
