@@ -135,6 +135,15 @@ CLOSE_ISSUE_AFTER_MERGE=true
 
 ---
 
+## Step 7 — Validate Knights of the Round Table safely
+
+Validate the Knights of the Round Table discussion foundation against the
+TeamBuilder repository in read-only or dry-run mode. Confirm the exact
+repository identity, evidence boundaries, human approval gates, and absence of
+GitHub mutations before authorizing any write operation.
+
+---
+
 ## Safety reminders
 
 - Never commit `.env`.
