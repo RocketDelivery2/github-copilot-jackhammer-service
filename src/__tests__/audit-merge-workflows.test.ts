@@ -53,6 +53,33 @@ jobs:
     }
   });
 
+  it('detects an unguarded merge after a shell command prefix', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'merge-workflow-audit-'));
+    const workflowPath = path.join(directory, 'prefixed-unguarded.yml');
+
+    try {
+      await writeFile(workflowPath, `name: unguarded
+security breaking-change do-not-merge
+jobs:
+  merge:
+    steps:
+      - name: Guarded merge
+        if: steps.gates.outputs.gate_pass == 'true'
+        run: gh pr merge 42
+      - name: Unconditionally merge
+        run: echo setup; gh pr merge 43
+      - name: Summary
+        run: echo summary >> "$GITHUB_STEP_SUMMARY"
+`);
+      const result = runAudit([workflowPath]);
+
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stdout, /merge_count=2 guard_count=1/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a do_arm merge step when the output is not derived from passed gates', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'merge-workflow-audit-'));
     const workflowPath = path.join(directory, 'unsafe-arm.yml');

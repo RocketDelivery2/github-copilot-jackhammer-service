@@ -214,6 +214,54 @@ describe('discussion writer', () => {
     assert.equal(result.generated?.type, 'release');
   });
 
+  it('escapes contributor-controlled PR and issue titles in generated Markdown', async () => {
+    const filler = 'evidence '.repeat(25).trim();
+    const titleInjection = `\n#H\n[x](https://a)**b**<img/onerror=1> ${filler}`;
+    const escapedTitle = `${String.raw`\#H \[x\]\(https://a\)\*\*b\*\*\<img/onerror=1\>`} ${filler}`;
+    const dependencies = createDependencies({
+      activity: createActivity({
+        mergedPullRequests: [{
+          number: 101,
+          title: `PR ${titleInjection}`,
+          url: 'https://example.test/pr/101',
+          mergedAt: '2026-07-15T00:00:00Z',
+        }],
+        closedIssues: [{
+          number: 22,
+          title: `Issue ${titleInjection}`,
+          url: 'https://example.test/issues/22',
+          closedAt: '2026-07-14T00:00:00Z',
+        }],
+        roadmapIssues: [{
+          number: 33,
+          title: `Roadmap ${titleInjection}`,
+          url: 'https://example.test/issues/33',
+          closedAt: '2026-07-14T00:00:00Z',
+        }],
+      }),
+    });
+    let publishedBody = '';
+    dependencies.createDiscussion = async input => {
+      publishedBody = input.body;
+      return { id: 'published', number: 78, title: input.title, url: 'https://example.test/discussions/78' };
+    };
+
+    const result = await runDiscussionWriter(dependencies, {
+      enabled: true,
+      autoPublish: true,
+      dryRun: false,
+      defaultType: 'roadmap',
+      minDaysBetweenPosts: 0,
+    });
+
+    assert.equal(result.status, 'published');
+    for (const prefix of ['PR', 'Issue', 'Roadmap']) {
+      assert.ok(publishedBody.includes(`${prefix} ${escapedTitle}`), `${prefix} title should be Markdown-escaped`);
+    }
+    assert.equal(publishedBody.includes(titleInjection), false);
+    assert.doesNotMatch(publishedBody, /^#H/m);
+  });
+
   it('approved hashtag inventory is enforced', async () => {
     await assert.rejects(() => runDiscussionWriter(createDependencies(), {
       enabled: true,
