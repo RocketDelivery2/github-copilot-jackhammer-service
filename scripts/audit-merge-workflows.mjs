@@ -23,7 +23,7 @@ function inspectWorkflow(source) {
     }
 
     const command = line.trim().replace(/^run:\s*/, '');
-    if (/\bgh\s+pr\s+merge\b/.test(command)) {
+    if (/\bgh\s+pr\s+(?:merge\b|'merge'|"merge")/.test(command)) {
       step.mergeCount += 1;
     }
   }
