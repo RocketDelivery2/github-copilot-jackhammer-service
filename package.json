@@ -43,12 +43,12 @@
     "@anthropic-ai/sdk": "^0.115.0",
     "@google/genai": "^2.23.0",
     "@octokit/rest": "^22.0.1",
-    "dotenv": "^16.4.7",
+    "dotenv": "^18.0.1",
     "ignore": "^7.0.9",
     "minimatch": "^11.0.1",
-    "openai": "^7.18.0",
+    "openai": "^7.19.0",
     "simple-git": "^4.0.2",
-    "yargs": "^17.7.2",
+    "yargs": "^18.1.0",
     "zod": "^4.6.6"
   },
   "devDependencies": {
