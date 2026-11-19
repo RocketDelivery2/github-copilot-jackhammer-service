@@ -18,6 +18,7 @@ function allowedContext(overrides: Partial<AutoMergePolicyInput> = {}): AutoMerg
     isDraft: false,
     state: 'OPEN',
     baseRefName: 'main',
+    isCrossRepository: false,
     headRefName: 'dependabot/npm_and_yarn/example-1.2.3',
     headSha,
     files,
@@ -27,7 +28,7 @@ function allowedContext(overrides: Partial<AutoMergePolicyInput> = {}): AutoMerg
       { name: 'Analyze (javascript-typescript)', status: 'COMPLETED', conclusion: 'SUCCESS', headSha },
     ],
     labels: [{ name: AUTO_MERGE_POLICY_LABEL }],
-    reviews: [{ login: 'maintainer', state: 'APPROVED' }],
+    reviews: [{ login: 'maintainer', state: 'APPROVED', commitSha: headSha }],
     reviewDecision: 'APPROVED',
     mergeStateStatus: 'CLEAN',
     dependencyUpdateType: null,
@@ -72,6 +73,12 @@ describe('auto-merge policy', () => {
     }));
     assert.equal(result.allowed, false);
     assert.ok(result.blockers.some(blocker => blocker.startsWith('Author gate:')));
+  });
+
+  it('blocks cross-repository PRs', () => {
+    const result = evaluateAutoMergePolicy(allowedContext({ isCrossRepository: true }));
+    assert.equal(result.allowed, false);
+    assert.ok(result.blockers.some(blocker => blocker.startsWith('Repository scope gate:')));
   });
 
   it('blocks an unsupported bot and a bot outside its exact branch prefix', () => {
@@ -145,14 +152,23 @@ describe('auto-merge policy', () => {
       allowedContext({ reviewDecision: null }),
       allowedContext({ reviewDecision: 'REVIEW_REQUIRED' }),
       allowedContext({ reviews: [] }),
-      allowedContext({ reviews: [{ login: 'dependabot[bot]', state: 'APPROVED' }] }),
-      allowedContext({ reviews: [{ login: 'maintainer[bot]', state: 'APPROVED' }] }),
-      allowedContext({ reviews: [{ login: 'dependabot[bot]', state: 'APPROVED' }, { login: 'octocat', state: 'COMMENTED' }] }),
+      allowedContext({ reviews: [{ login: 'dependabot[bot]', state: 'APPROVED', commitSha: headSha }] }),
+      allowedContext({ reviews: [{ login: 'maintainer[bot]', state: 'APPROVED', commitSha: headSha }] }),
+      allowedContext({ reviews: [{ login: 'dependabot[bot]', state: 'APPROVED', commitSha: headSha }, { login: 'octocat', state: 'COMMENTED', commitSha: headSha }] }),
+      allowedContext({ reviews: [{ login: 'maintainer', state: 'APPROVED', commitSha: 'b'.repeat(40) }] }),
     ]) {
       const result = evaluateAutoMergePolicy(context);
       assert.equal(result.allowed, false);
       assert.ok(result.blockers.some(blocker => blocker.startsWith('Review gate:')));
     }
+  });
+
+  it('fails closed when review commit SHA evidence is malformed', () => {
+    const result = evaluateAutoMergePolicy(allowedContext({
+      reviews: [{ login: 'maintainer', state: 'APPROVED', commitSha: '' }],
+    }));
+    assert.equal(result.allowed, false);
+    assert.ok(result.blockers.some(blocker => blocker.startsWith('Context gate:')));
   });
 
   it('requires each required status check to pass against the exact head SHA', () => {

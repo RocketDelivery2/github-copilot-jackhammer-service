@@ -25,6 +25,7 @@ export type AutoMergePolicyInput = {
   isDraft: boolean;
   state?: string;
   baseRefName?: string;
+  isCrossRepository?: boolean;
   headRefName?: string;
   headSha?: string;
   changedFileCount?: number;
@@ -36,7 +37,7 @@ export type AutoMergePolicyInput = {
     headSha: string;
   }[];
   labels: readonly { name: string }[];
-  reviews?: readonly { login: string; state: string }[];
+  reviews?: readonly { login: string; state: string; commitSha: string }[];
   reviewDecision: string | null;
   mergeStateStatus: string | null;
   dependencyUpdateType?: string | null;
@@ -113,7 +114,11 @@ function isCheckArray(value: unknown): value is NonNullable<AutoMergePolicyInput
 
 function isReviewArray(value: unknown): value is NonNullable<AutoMergePolicyInput['reviews']> {
   return Array.isArray(value) && value.every(item =>
-    isRecord(item) && isLogin(item.login) && isNonEmptyString(item.state));
+    isRecord(item)
+      && isLogin(item.login)
+      && isNonEmptyString(item.state)
+      && typeof item.commitSha === 'string'
+      && /^[0-9a-f]{40}$/.test(item.commitSha));
 }
 
 function isPolicyInput(value: unknown): value is ValidatedAutoMergePolicyInput {
@@ -129,6 +134,7 @@ function isPolicyInput(value: unknown): value is ValidatedAutoMergePolicyInput {
     && typeof value.isDraft === 'boolean'
     && isNonEmptyString(value.state)
     && isNonEmptyString(value.baseRefName)
+    && typeof value.isCrossRepository === 'boolean'
     && isNonEmptyString(value.headRefName)
     && /^[0-9a-f]{40}$/.test(String(value.headSha))
     && Number.isSafeInteger(value.changedFileCount)
@@ -223,10 +229,10 @@ export function evaluateAutoMergePolicy(
 
   addGate(
     'Repository scope gate',
-    input.state === 'OPEN' && input.baseRefName === 'main',
-    input.state === 'OPEN' && input.baseRefName === 'main'
-      ? 'PR is open and targets main.'
-      : 'PR must be open and target main.',
+    input.state === 'OPEN' && input.baseRefName === 'main' && !input.isCrossRepository,
+    input.state === 'OPEN' && input.baseRefName === 'main' && !input.isCrossRepository
+      ? 'PR is open, same-repository, and targets main.'
+      : 'PR must be open, originate in this repository, and target main.',
   );
 
   addGate('Draft gate', !input.isDraft, input.isDraft ? 'PR is still marked draft.' : 'PR is ready for review.');
@@ -263,13 +269,16 @@ export function evaluateAutoMergePolicy(
 
   const hasIndependentHumanApproval = input.reviews.some(review =>
     review.state === 'APPROVED'
+      && review.commitSha === input.headSha
       && review.login !== authorLogin
       && !review.login.endsWith('[bot]'));
   const reviewAllowed = input.reviewDecision === 'APPROVED' && hasIndependentHumanApproval;
   addGate(
     'Review gate',
     reviewAllowed,
-    reviewAllowed ? 'an independent non-bot approval is present.' : 'an independent non-bot approval is required; missing or unknown fails closed.',
+    reviewAllowed
+      ? 'an independent non-bot approval is present for the exact head SHA.'
+      : 'an independent non-bot approval for the exact head SHA is required; missing or unknown fails closed.',
   );
 
   const checksAllowed = AUTO_MERGE_REQUIRED_CHECKS.every(requiredName => {

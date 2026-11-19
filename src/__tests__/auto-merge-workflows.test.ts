@@ -40,6 +40,9 @@ describe('auto-merge workflows', () => {
       assert.match(gatesStep, /\.auto_merge != null and \.auto_merge\.enabled_by\.login == "github-actions\[bot\]"/);
       assert.match(gatesStep, /--argjson pr_rest "\$PR_REST_JSON"/);
       assert.match(gatesStep, /author: \{login: \$pr_rest\.user\.login\}/);
+      assert.match(gatesStep, /REVIEWS_JSON=\$\(gh api --paginate --slurp "repos\/\$REPO\/pulls\/\$PR_NUMBER\/reviews\?per_page=100"/);
+      assert.match(gatesStep, /commitSha: \.commit_id/);
+      assert.match(gatesStep, /isCrossRepository: \$pr\.isCrossRepository/);
       assert.match(workflow, /autoMergeEnabled: \$auto_merge_enabled/);
       assert.match(workflow, /^        if: always\(\) && steps\.resolve\.outputs\.pr_number != '' && \(steps\.gates\.outcome != 'success' \|\| steps\.gates\.outputs\.gate_pass == 'false'\)$/m);
       assert.match(workflow, /gh pr merge "\$PR_NUMBER" --repo "\$REPO" --disable-auto/);

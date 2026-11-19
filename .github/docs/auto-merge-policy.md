@@ -15,10 +15,10 @@ The pure `src/auto-merge-policy.ts` evaluator requires:
 1. Well-formed PR metadata; missing or malformed values block.
 2. The PR author and latest head-commit author are the same exact allowlisted bot: `dependabot[bot]` or `renovate[bot]`. `github-actions[bot]` is not an allowed author.
 3. The head branch uses the corresponding `dependabot/` or `renovate/` prefix.
-4. The PR is open, ready (not draft), and targets `main`.
+4. The PR is open, ready (not draft), originates in this repository, and targets `main`.
 5. Every changed path is in the Markdown/documentation/test allowlist. `.github/**`, package manifests and lockfiles, `src/config.ts`, `src/github.ts`, path traversal, and all other files are denied. The Dependabot-only exception permits package manifests/lockfiles only for direct development-dependency patch/minor updates; it does not permit application source changes.
 6. No deny label is present. The general workflow also requires the `auto-merge` opt-in label.
-7. `reviewDecision` is exactly `APPROVED` and at least one approving review is from a non-author, non-bot identity.
+7. `reviewDecision` is exactly `APPROVED` and at least one approving review is from a non-author, non-bot identity on the exact current head SHA.
 8. `test-and-build` and `Analyze (javascript-typescript)` have completed successfully for the exact head SHA.
 9. GitHub reports `mergeStateStatus` exactly `CLEAN`.
 10. Dependabot mode additionally requires fetch-metadata to report a direct development dependency patch or minor update. Missing metadata and major/other update types block.

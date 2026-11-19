@@ -78,11 +78,13 @@ jobs:
         run: |
           set -euo pipefail
           PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
-            --json baseRefName,changedFiles,headRefName,headRefOid,isDraft,labels,mergeStateStatus,number,reviewDecision,reviews,state,url)
+            --json baseRefName,changedFiles,headRefName,headRefOid,isCrossRepository,isDraft,labels,mergeStateStatus,number,reviewDecision,state,url)
           PR_REST_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
           HEAD_SHA=$(jq -er '.headRefOid | select(test("^[0-9a-f]{40}$"))' <<<"$PR_JSON")
           HEAD_AUTHOR_LOGIN=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.author.login // ""')
           FILES_JSON=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[]' | jq -s '[.[].filename]')
+          REVIEWS_JSON=$(gh api --paginate --slurp "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+            | jq '[.[][] | {login: (.user.login // ""), state, commitSha: .commit_id}]')
           CHECKS_JSON=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
             --jq '.check_runs[] | {name, status: (.status | ascii_upcase), conclusion: (if .conclusion == null then null else (.conclusion | ascii_upcase) end), headSha: .head_sha}' \
             | jq -s '.')
@@ -92,6 +94,7 @@ jobs:
             --argjson pr_rest "$PR_REST_JSON" \
             --arg head_author "$HEAD_AUTHOR_LOGIN" \
             --argjson files "$FILES_JSON" \
+            --argjson reviews "$REVIEWS_JSON" \
             --argjson checks "$CHECKS_JSON" \
             --argjson auto_merge_enabled "$AUTO_MERGE_ENABLED" \
             '{
@@ -102,13 +105,14 @@ jobs:
               isDraft: $pr.isDraft,
               state: $pr.state,
               baseRefName: $pr.baseRefName,
+              isCrossRepository: $pr.isCrossRepository,
               headRefName: $pr.headRefName,
               headSha: $pr.headRefOid,
               changedFileCount: $pr.changedFiles,
               files: $files,
               checks: $checks,
               labels: [$pr.labels[] | {name}],
-              reviews: [$pr.reviews[] | {login: (.author.login // ""), state}],
+              reviews: $reviews,
               reviewDecision: $pr.reviewDecision,
               mergeStateStatus: $pr.mergeStateStatus,
               dependencyUpdateType: null,
