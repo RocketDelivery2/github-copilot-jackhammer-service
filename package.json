@@ -48,7 +48,7 @@
     "minimatch": "^11.0.1",
     "openai": "^7.19.0",
     "simple-git": "^4.0.2",
-    "yargs": "^18.1.0",
+    "yargs": "^18.2.0",
     "zod": "^4.6.6"
   },
   "devDependencies": {
