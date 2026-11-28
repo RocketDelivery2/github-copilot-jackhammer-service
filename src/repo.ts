@@ -44,14 +44,14 @@ async function walk(dir: string, root: string, ig: Ignore): Promise<string[]> {
   for (const entry of entries) {
     const abs = path.join(dir, entry.name);
     const rel = path.relative(root, abs).replaceAll(path.sep, '/');
+    if (entry.isSymbolicLink()) {
+      throw new OutboundContentError('symbolic links and reparse points are not allowed');
+    }
     const realRoot = await fs.realpath(root);
     const realAbs = await fs.realpath(abs).catch(() => abs);
     const relativeToRoot = path.relative(realRoot, realAbs);
     if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
       throw new OutboundContentError('repository path escapes the containment root');
-    }
-    if (entry.isSymbolicLink()) {
-      throw new OutboundContentError('symbolic links and reparse points are not allowed');
     }
     if (ig.ignores(rel) || ig.ignores(`${rel}/`)) continue;
     if (entry.isDirectory()) {
