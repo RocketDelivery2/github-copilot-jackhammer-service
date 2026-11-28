@@ -492,6 +492,7 @@ async function runOnce(): Promise<void> {
   console.log(`Snapshot ${snapshot.commitSha}: ${snapshot.fileCount} files; asking OpenAI for tasks...`);
   const tasks = await createTasks(
     snapshot,
+    undefined,
     state.extractedCopilotGuidance ?? null,
     state.recentCopilotResults,
   );
