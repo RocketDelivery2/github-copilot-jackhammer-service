@@ -36,12 +36,12 @@ describe('outbound repository safety', () => {
     raw: async () => 'abc1234567890123456789012345678901234567',
   } as any;
 
-  const unsupportedHandleContainmentReason =
-    `opened-handle containment verification is unsupported on ${process.platform}`;
+  const unsupportedDescriptorReadReason =
+    `descriptor-relative repository reads are unsupported on ${process.platform}`;
 
   function itWithHandleVerifiedReads(name: string, run: () => Promise<void>): void {
     it(name, {
-      skip: process.platform === 'linux' ? false : unsupportedHandleContainmentReason,
+      skip: process.platform === 'linux' ? false : unsupportedDescriptorReadReason,
     }, run);
   }
 
@@ -268,27 +268,44 @@ describe('outbound repository safety', () => {
     });
   });
 
-  itWithHandleVerifiedReads('rejects a parent-directory swap before final path resolution without calling the provider', async () => {
+  itWithHandleVerifiedReads('rejects a parent symlink swap-and-restore before reading or calling the provider', async () => {
     await withFixture(async root => {
       const parentDirectory = path.join(root, 'nested');
       const file = path.join(parentDirectory, 'README.md');
       const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'jackhammer-outside-parent-'));
-      const movedDirectory = path.join(outsideRoot, 'nested');
+      const movedDirectory = path.join(outsideRoot, 'original-nested');
+      const outsideDirectory = path.join(outsideRoot, 'external-nested');
       await fs.mkdir(parentDirectory);
-      await fs.writeFile(file, 'outside directory content');
+      await fs.mkdir(outsideDirectory);
+      await fs.writeFile(file, 'safe repository content');
+      await fs.writeFile(path.join(outsideDirectory, 'README.md'), 'outside directory content');
 
       const { createTasks } = await import('../openai.js');
       let providerCalls = 0;
+      let originalMoved = false;
+      let linkInstalled = false;
+      let outsideMovedIntoRoot = false;
       try {
         await assert.rejects(async () => {
-          const buffer = await readBoundedRepositoryFile(root, file, 100, async stage => {
-            if (stage === 'after-final-path-stat') {
+          const buffer = await readBoundedRepositoryFile(root, file, 100, async (stage, _filePath, component) => {
+            if (stage === 'after-path-check') {
               await fs.rename(parentDirectory, movedDirectory);
-              await fs.symlink(movedDirectory, parentDirectory);
+              originalMoved = true;
+              await fs.symlink(outsideDirectory, parentDirectory);
+              linkInstalled = true;
             }
-            if (stage === 'before-final-path-resolution') {
-              await fs.rm(parentDirectory, { recursive: true, force: true });
+            if (stage === 'after-directory-open-attempt'
+              && component === 'nested' && originalMoved && linkInstalled) {
+              await fs.unlink(parentDirectory);
+              linkInstalled = false;
               await fs.rename(movedDirectory, parentDirectory);
+              originalMoved = false;
+            }
+            if (stage === 'after-open' && linkInstalled) {
+              await fs.unlink(parentDirectory);
+              linkInstalled = false;
+              await fs.rename(outsideDirectory, parentDirectory);
+              outsideMovedIntoRoot = true;
             }
           });
           await createTasks(snapshotWithReadContent(buffer.toString('utf8')), null, [], {
@@ -299,10 +316,13 @@ describe('outbound repository safety', () => {
               },
             },
           });
-        }, /repository path escapes the containment root/);
+        }, /ELOOP|ENOTDIR|symbolic link/i);
         assert.equal(providerCalls, 0);
+        assert.equal(await fs.readFile(file, 'utf8'), 'safe repository content');
       } finally {
-        await fs.rm(parentDirectory, { recursive: true, force: true });
+        if (linkInstalled) await fs.unlink(parentDirectory);
+        if (outsideMovedIntoRoot) await fs.rename(parentDirectory, outsideDirectory);
+        if (originalMoved) await fs.rename(movedDirectory, parentDirectory);
         await fs.rm(outsideRoot, { recursive: true, force: true });
       }
     });
@@ -327,7 +347,7 @@ describe('outbound repository safety', () => {
             },
           },
         });
-      }, /opened-handle containment verification is unsupported on/);
+      }, /descriptor-relative repository reads are unsupported on/);
       assert.equal(providerCalls, 0);
     });
   });

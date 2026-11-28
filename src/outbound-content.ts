@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
-import fs from 'node:fs/promises';
+import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 
 export class OutboundContentError extends Error {
@@ -29,6 +29,7 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/i,
   /\bAKIA[0-9A-Z]{16}\b/,
   /\bgh[pousr]_[A-Za-z0-9]{36,255}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{20,255}\b/,
   /\bglpat-[A-Za-z0-9_-]{20,}\b/i,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/i,
   /\bAIza[0-9A-Za-z_-]{35}\b/,
@@ -57,6 +58,11 @@ export function isExcludedOutboundPath(relativePath: string): boolean {
 
 export type BoundedReadStage =
   | 'after-path-check'
+  | 'after-root-open'
+  | 'before-directory-open'
+  | 'after-directory-open-attempt'
+  | 'after-directory-open'
+  | 'before-file-open'
   | 'after-open'
   | 'after-read'
   | 'after-final-path-stat'
@@ -65,6 +71,7 @@ export type BoundedReadStage =
 export type BoundedReadTestHook = (
   stage: BoundedReadStage,
   filePath: string,
+  component?: string,
 ) => void | Promise<void>;
 
 function assertContained(root: string, target: string): void {
@@ -74,25 +81,55 @@ function assertContained(root: string, target: string): void {
   }
 }
 
-function assertOpenedHandleContainmentSupported(): void {
+function assertDescriptorRelativeReadsSupported(): void {
   if (process.platform !== 'linux') {
     throw new OutboundContentError(
-      `opened-handle containment verification is unsupported on ${process.platform}`,
+      `descriptor-relative repository reads are unsupported on ${process.platform}`,
     );
   }
 }
 
-async function assertOpenedHandleContained(root: string, fileDescriptor: number): Promise<void> {
-  assertOpenedHandleContainmentSupported();
-  let openedPath: string;
+function descriptorRelativePath(directory: FileHandle, component: string): string {
+  return `/proc/self/fd/${directory.fd}/${component}`;
+}
+
+async function assertProcFdAvailable(): Promise<void> {
   try {
-    openedPath = await fs.realpath(`/proc/self/fd/${fileDescriptor}`);
+    await fs.access('/proc/self/fd');
   } catch {
     throw new OutboundContentError(
-      'opened-handle containment verification is unavailable on linux',
+      'descriptor-relative repository reads are unsupported without /proc/self/fd',
     );
   }
-  assertContained(root, openedPath);
+}
+
+async function openDirectoryFromFilesystemRoot(directoryPath: string): Promise<FileHandle> {
+  const directoryComponents = path.posix.relative('/', directoryPath).split('/').filter(Boolean);
+  let current = await fs.open(
+    '/',
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    for (const component of directoryComponents) {
+      const next = await fs.open(
+        descriptorRelativePath(current, component),
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      const previous = current;
+      current = next;
+      await previous.close();
+    }
+    return current;
+  } catch (error) {
+    await current.close();
+    throw error;
+  }
+}
+
+async function closeHandles(handles: readonly FileHandle[]): Promise<void> {
+  for (const handle of [...handles].reverse()) {
+    await handle.close();
+  }
 }
 
 function sameIdentity(
@@ -120,8 +157,16 @@ export async function readBoundedRepositoryFile(
     throw new OutboundContentError('invalid bounded-read limit');
   }
   const canonicalRoot = await fs.realpath(rootPath);
-  const canonicalPath = await fs.realpath(filePath);
-  assertContained(canonicalRoot, canonicalPath);
+  const absoluteRoot = path.resolve(rootPath);
+  const absoluteFile = path.resolve(filePath);
+  assertContained(absoluteRoot, absoluteFile);
+  const relativePath = path.relative(absoluteRoot, absoluteFile);
+  const components = relativePath.split(path.sep);
+  if (relativePath.length === 0 || components.length > MAX_REPOSITORY_PATH_DEPTH
+    || components.some(component => component.length === 0 || component === '.'
+      || component === '..')) {
+    throw new OutboundContentError('repository path is not a bounded relative file path');
+  }
   const beforePath = await fs.lstat(filePath, { bigint: true });
   if (!beforePath.isFile() || beforePath.isSymbolicLink()) {
     throw new OutboundContentError('unsupported or reparse repository path type');
@@ -129,17 +174,51 @@ export async function readBoundedRepositoryFile(
   if (beforePath.size > BigInt(maximumBytes)) {
     throw new OutboundContentError('repository input exceeds its byte limit');
   }
-  assertOpenedHandleContainmentSupported();
+  assertDescriptorRelativeReadsSupported();
+  await assertProcFdAvailable();
   await testHook?.('after-path-check', filePath);
 
-  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const directoryHandles: FileHandle[] = [];
+  let handle: FileHandle | undefined;
   try {
+    const rootHandle = await openDirectoryFromFilesystemRoot(canonicalRoot);
+    directoryHandles.push(rootHandle);
+    await testHook?.('after-root-open', filePath);
+
+    let parentHandle = rootHandle;
+    for (const component of components.slice(0, -1)) {
+      await testHook?.('before-directory-open', filePath, component);
+      let directoryHandle: FileHandle | undefined;
+      try {
+        directoryHandle = await fs.open(
+          descriptorRelativePath(parentHandle, component),
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+        directoryHandles.push(directoryHandle);
+      } finally {
+        await testHook?.('after-directory-open-attempt', filePath, component);
+      }
+      if (!directoryHandle) {
+        throw new OutboundContentError('repository directory could not be opened safely');
+      }
+      if (!(await directoryHandle.stat()).isDirectory()) {
+        throw new OutboundContentError('unsupported or reparse repository path type');
+      }
+      parentHandle = directoryHandle;
+      await testHook?.('after-directory-open', filePath, component);
+    }
+
+    const fileName = components[components.length - 1];
+    await testHook?.('before-file-open', filePath, fileName);
+    handle = await fs.open(
+      descriptorRelativePath(parentHandle, fileName),
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
     await testHook?.('after-open', filePath);
     const opened = await handle.stat({ bigint: true });
     if (!sameIdentity(beforePath, opened) || opened.size > BigInt(maximumBytes)) {
       throw new OutboundContentError('repository input identity changed before reading');
     }
-    await assertOpenedHandleContained(canonicalRoot, handle.fd);
 
     const content = Buffer.alloc(maximumBytes + 1);
     let offset = 0;
@@ -152,22 +231,25 @@ export async function readBoundedRepositoryFile(
       throw new OutboundContentError('repository input grew beyond its byte limit');
     }
     await testHook?.('after-read', filePath);
-    await assertOpenedHandleContained(canonicalRoot, handle.fd);
 
     const afterHandle = await handle.stat({ bigint: true });
-    const afterPath = await fs.lstat(filePath, { bigint: true });
-    await testHook?.('after-final-path-stat', filePath);
-    await assertOpenedHandleContained(canonicalRoot, handle.fd);
     await testHook?.('before-final-path-resolution', filePath);
-    const canonicalAfterPath = await fs.realpath(filePath);
-    assertContained(canonicalRoot, canonicalAfterPath);
+    const afterPath = await fs.lstat(
+      descriptorRelativePath(parentHandle, fileName),
+      { bigint: true },
+    );
+    await testHook?.('after-final-path-stat', filePath);
     if (!sameIdentity(opened, afterHandle) || !sameIdentity(opened, afterPath)
-      || canonicalPath !== canonicalAfterPath) {
+      || opened.size > BigInt(maximumBytes)) {
       throw new OutboundContentError('repository input identity changed while reading');
     }
     return content.subarray(0, offset);
   } finally {
-    await handle.close();
+    try {
+      if (handle) await handle.close();
+    } finally {
+      await closeHandles(directoryHandles);
+    }
   }
 }
 

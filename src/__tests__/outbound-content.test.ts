@@ -61,6 +61,38 @@ describe('provider outbound privacy', () => {
     }
   });
 
+  it('rejects github_pat_ tokens before provider invocation', async () => {
+    const previousKey = process.env.OPENAI_API_KEY;
+    const previousGithub = process.env.GITHUB_TOKEN;
+    process.env.OPENAI_API_KEY = 'test-key';
+    process.env.GITHUB_TOKEN = 'test-token';
+    try {
+      const { createTasks } = await import('../openai.js');
+      const token = `github_pat_${'A'.repeat(82)}`;
+      const unsafe = snapshot({
+        files: [repoFile('README.md', `# Project\n${token}`)],
+      });
+      let providerCalls = 0;
+      await assert.rejects(
+        () => createTasks(unsafe, undefined, null, [], {
+          responses: {
+            create: async () => {
+              providerCalls += 1;
+              return { output_text: '{"tasks":[]}' };
+            },
+          },
+        }),
+        /rejected credential format/,
+      );
+      assert.equal(providerCalls, 0);
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousKey;
+      if (previousGithub === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousGithub;
+    }
+  });
+
   it('rejects excluded env paths before provider invocation', async () => {
     const previousKey = process.env.OPENAI_API_KEY;
     const previousGithub = process.env.GITHUB_TOKEN;
