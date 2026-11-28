@@ -35,6 +35,7 @@ OpenAI/ChatGPT reads the latest repo snapshot
 - Limits context by `MAX_CONTEXT_FILES` and `MAX_CONTEXT_BYTES`.
 - Supports `DRY_RUN=true` (default) — no GitHub writes occur.
 - **By default, JackHammer starts in safe mode with `DRY_RUN=true` and does not merge PRs.**
+- **`DRY_RUN=true` overrides all automatic PR approval, merge, issue-close, and branch-deletion settings, even if autopilot flags are enabled.**
 - When `FULL_AUTOPILOT=true`, `AUTO_MERGE_PR=true`, and GitHub permissions allow it, JackHammer can approve, merge, close issues, and delete feature branches automatically.
 - **JackHammer cannot bypass GitHub branch protection, required checks, organization rules, token limits, or missing Copilot cloud-agent access.**
 
