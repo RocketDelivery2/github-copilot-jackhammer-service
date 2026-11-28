@@ -1,5 +1,4 @@
-import fs from 'node:fs';
-import OpenAI, { toFile } from 'openai';
+import OpenAI from 'openai';
 import { z } from 'zod';
 import { config } from './config.js';
 import { ensureNotesSection, stripWrapperText } from './brain.js';
@@ -11,6 +10,7 @@ import {
   buildGuidanceContext,
   buildTaskCreationPrompt,
 } from './promptContext.js';
+import { assertSafeOutboundText } from './outbound-content.js';
 
 const FEEDBACK_LOOP_PROMPT_POLICY = `
 Feedback-loop policy:
@@ -35,13 +35,50 @@ const TaskSchema = z.object({
 const TaskListSchema = z.object({ tasks: z.array(TaskSchema) });
 
 const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
+type ResponsesClient = {
+  responses: {
+    create(input: any): Promise<{ output_text: string }>;
+  };
+};
+
+export function validateTaskCreationSnapshot(snapshot: RepoSnapshot): void {
+  if (!snapshot.commitSha || !/^[0-9a-f]{7,64}$/i.test(snapshot.commitSha)) {
+    throw new Error('Outbound content rejected: missing or ambiguous repository source identity');
+  }
+  if (!Array.isArray(snapshot.files) || snapshot.files.length === 0) {
+    throw new Error('Outbound content rejected: required repository text context is missing');
+  }
+  let total = 0;
+  for (const hint of snapshot.packageHints) {
+    assertSafeOutboundText(hint, 'package hint');
+  }
+  for (const file of snapshot.files) {
+    if (!file.path || file.path.startsWith('/') || file.path.includes('\\') || /(^|\/)\.{1,2}(\/|$)/.test(file.path)) {
+      throw new Error('Outbound content rejected: ambiguous repository path');
+    }
+    if (/(^|\/)\.env(?:\.[^/]*)?$|(^|\/)[^/]+\.(?:pem|key)$|(^|\/)[^/]+\.(?:pem|key)\//i.test(file.path)) {
+      throw new Error('Outbound content rejected: excluded sensitive path');
+    }
+    assertSafeOutboundText(file.content, 'repository text');
+    total += Buffer.byteLength(file.content);
+  }
+  if (total > config.MAX_CONTEXT_BYTES || snapshot.files.length > config.MAX_CONTEXT_FILES) {
+    throw new Error('Outbound content rejected: repository context exceeds configured limits');
+  }
+}
 
 export async function createTasks(
   snapshot: RepoSnapshot,
-  zipPath?: string,
   guidance: CopilotGuidance | null = null,
   recentResults: CopilotResult[] = [],
+  providerClient: ResponsesClient = client,
 ): Promise<AiTask[]> {
+  validateTaskCreationSnapshot(snapshot);
+  assertSafeOutboundText(snapshot.recentChanges, 'repository history');
+  assertSafeOutboundText(guidance?.rawText ?? 'none', 'guidance text');
+  for (const result of recentResults) {
+    assertSafeOutboundText(result.summary, 'recent result');
+  }
   const compactContext = snapshot.files.map(f => `--- FILE: ${f.path} (${f.bytes} bytes) ---\n${f.content}`).join('\n\n');
   const guidanceContext = buildGuidanceContext(guidance, recentResults);
   const inputText = buildTaskCreationPrompt({
@@ -51,15 +88,10 @@ export async function createTasks(
     maxTasksPerRun: config.MAX_TASKS_PER_RUN,
   });
 
+  assertSafeOutboundText(inputText, 'provider prompt');
   const content: OpenAI.Responses.ResponseInputContent[] = [{ type: 'input_text', text: inputText }];
-  // Uploading the repo zip gives OpenAI an audit artifact. The model may not fully expand every zip in-context,
-  // so the text snapshot above remains the source of truth for task creation.
-  if (zipPath && fs.existsSync(zipPath)) {
-    const uploaded = await client.files.create({ file: await toFile(fs.createReadStream(zipPath), 'repo.zip'), purpose: 'assistants' });
-    content.unshift({ type: 'input_file', file_id: uploaded.id });
-  }
 
-  const response = await client.responses.create({
+  const response = await providerClient.responses.create({
     model: resolveModel({ call: 'task_creation' }, config),
     instructions: `${TASK_CREATION_INSTRUCTIONS}\n\n${FEEDBACK_LOOP_PROMPT_POLICY}`,
     input: [{ role: 'user', content }],
@@ -115,6 +147,7 @@ export async function createContinuationComment(
   guidance: CopilotGuidance | null,
   recentResults: CopilotResult[],
   prContext: string,
+  providerClient: ResponsesClient = client,
 ): Promise<string> {
   const guidanceContext = buildGuidanceContext(guidance, recentResults);
   const inputText = buildContinuationCommentPrompt({
@@ -122,8 +155,13 @@ export async function createContinuationComment(
     guidanceContext,
     prContext,
   });
+  assertSafeOutboundText(inputText, 'provider prompt');
+  assertSafeOutboundText(guidance?.rawText ?? 'none', 'guidance text');
+  for (const result of recentResults) {
+    assertSafeOutboundText(result.summary, 'recent result');
+  }
 
-  const response = await client.responses.create({
+  const response = await providerClient.responses.create({
     model: resolveModel({ call: 'continuation_comment' }, config),
     instructions: 'You are writing a concise GitHub comment to continue a Copilot coding task. Be direct and actionable.',
     input: [{ role: 'user', content: [{ type: 'input_text', text: inputText }] }],

@@ -1,11 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
 import type { Ignore } from 'ignore';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import type { RepoSnapshot, RepoFile } from './types.js';
 import type { AppConfig } from './config.js';
+import { assertSafeOutboundText, OutboundContentError } from './outbound-content.js';
 
 const require = createRequire(import.meta.url);
 const ignoreFactory = require('ignore') as () => Ignore;
@@ -38,51 +38,33 @@ export async function ensureRepo(workDir: string): Promise<SimpleGit> {
   return git;
 }
 
-async function execFile(command: string, args: string[], cwd: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: 'inherit' });
-    child.on('error', reject);
-    child.on('close', code => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)));
-  });
-}
-
-export function buildZipArchiveCommand(platform: NodeJS.Platform, workDir: string, outPath: string): { command: string; args: string[] } {
-  if (platform === 'win32') {
-    return {
-      command: 'powershell.exe',
-      args: [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        buildWindowsZipScript(workDir, outPath),
-      ],
-    };
-  }
-
-  return {
-    command: 'zip',
-    args: ['-qr', outPath, '.', '-x', '.git/*', 'node_modules/*', 'dist/*', 'build/*', '.env*'],
-  };
-}
-
-export async function zipRepo(workDir: string, outPath: string): Promise<string> {
-  await fs.mkdir(path.dirname(outPath), { recursive: true });
-  await fs.rm(outPath, { force: true });
-  const archiveCommand = buildZipArchiveCommand(process.platform, workDir, outPath);
-  await execFile(archiveCommand.command, archiveCommand.args, workDir);
-  return outPath;
-}
-
 async function walk(dir: string, root: string, ig: Ignore): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const out: string[] = [];
   for (const entry of entries) {
     const abs = path.join(dir, entry.name);
     const rel = path.relative(root, abs).replaceAll(path.sep, '/');
+    const realRoot = await fs.realpath(root);
+    const realAbs = await fs.realpath(abs).catch(() => abs);
+    const relativeToRoot = path.relative(realRoot, realAbs);
+    if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+      throw new OutboundContentError('repository path escapes the containment root');
+    }
+    if (entry.isSymbolicLink()) {
+      throw new OutboundContentError('symbolic links and reparse points are not allowed');
+    }
     if (ig.ignores(rel) || ig.ignores(`${rel}/`)) continue;
-    if (entry.isDirectory()) out.push(...await walk(abs, root, ig));
-    else out.push(rel);
+    if (entry.isDirectory()) {
+      const st = await fs.lstat(abs);
+      if (!st.isDirectory()) throw new OutboundContentError('unsupported directory entry type');
+      out.push(...await walk(abs, root, ig));
+    } else if (entry.isFile()) {
+      const st = await fs.lstat(abs);
+      if (!st.isFile()) throw new OutboundContentError('unsupported file entry type');
+      out.push(rel);
+    } else {
+      throw new OutboundContentError('unknown repository path type');
+    }
   }
   return out;
 }
@@ -101,21 +83,53 @@ export async function snapshotRepo(workDir: string, git: SimpleGit): Promise<Rep
   } catch {}
 
   const sha = (await git.revparse(['HEAD'])).trim();
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) {
+    throw new OutboundContentError('required repository source identity is missing or unreadable');
+  }
   const recentChanges = await git.raw(['log', '--oneline', '--decorate', '--max-count=20']);
-  const all = (await walk(workDir, workDir, ig)).filter(looksText);
+  const all = await walk(workDir, workDir, ig);
   all.sort((a, b) => scoreFile(a) - scoreFile(b));
 
   const files: RepoFile[] = [];
   let total = 0;
   for (const rel of all) {
-    if (files.length >= config.MAX_CONTEXT_FILES || total >= config.MAX_CONTEXT_BYTES) break;
+    if (!looksText(rel)) {
+      const absUnknown = path.join(workDir, rel);
+      if (/\.(?:bin|exe|dll|so|dylib|class|wasm)$/i.test(rel)) {
+        throw new OutboundContentError('unsupported binary file type');
+      }
+      const buffer = await fs.readFile(absUnknown);
+      if (buffer.includes(0) || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(buffer.toString('latin1'))) {
+        throw new OutboundContentError('unexpected binary file is not allowed in repository context');
+      }
+      continue;
+    }
+    if (files.length >= config.MAX_CONTEXT_FILES) {
+      throw new OutboundContentError('repository context exceeds the configured file limit');
+    }
     const abs = path.join(workDir, rel);
     const st = await fs.stat(abs);
-    if (st.size > 80_000) continue;
-    const content = await fs.readFile(abs, 'utf8').catch(() => '');
-    if (!content || /\u0000/.test(content)) continue;
-    total += Buffer.byteLength(content);
+    if (st.size > 80_000) {
+      throw new OutboundContentError('repository text file exceeds the per-file size limit');
+    }
+    const buffer = await fs.readFile(abs);
+    let content: string;
+    try {
+      content = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    } catch {
+      throw new OutboundContentError('unsupported text encoding');
+    }
+    assertSafeOutboundText(content, 'repository text');
+    if (buffer.length === 0) continue;
+    const bytes = Buffer.byteLength(content);
+    if (total + bytes > config.MAX_CONTEXT_BYTES) {
+      throw new OutboundContentError('repository context exceeds the configured aggregate byte limit');
+    }
+    total += bytes;
     files.push({ path: rel, bytes: st.size, content });
+  }
+  if (files.length === 0) {
+    throw new OutboundContentError('required repository text context is missing');
   }
 
   const packageHints: string[] = [];
@@ -144,23 +158,4 @@ function scoreFile(file: string): number {
   if (file.includes('/components/') || file.startsWith('components/')) return 4;
   if (file.includes('test') || file.includes('spec')) return 5;
   return 10;
-}
-
-function buildWindowsZipScript(workDir: string, outPath: string): string {
-  const escapedWorkDir = workDir.replace(/'/g, "''");
-  const escapedOutPath = outPath.replace(/'/g, "''");
-
-  return [
-    '$ErrorActionPreference = "Stop";',
-    `$workDir = '${escapedWorkDir}';`,
-    `$outPath = '${escapedOutPath}';`,
-    '$root = (Resolve-Path -LiteralPath $workDir).Path.TrimEnd("\\");',
-    'Set-Location -LiteralPath $root;',
-    '$files = Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object {',
-    '  $relative = $_.FullName.Substring($root.Length + 1).Replace("\\", "/");',
-    '  $relative -notmatch "(^|/)(\\.git|node_modules|dist|build)(/|$)" -and $relative -notmatch "(^|/)\\.env(\\.|$)"',
-    '} | ForEach-Object { $_.FullName.Substring($root.Length + 1) };',
-    'if (-not $files -or $files.Count -eq 0) { throw "No files available to archive." }',
-    'Compress-Archive -LiteralPath $files -DestinationPath $outPath -Force;',
-  ].join(' ');
 }

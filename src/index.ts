@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import yargs from 'yargs/yargs';
 import { hideBin } from 'yargs/helpers';
 import { config } from './config.js';
-import { ensureRepo, snapshotRepo, zipRepo } from './repo.js';
+import { ensureRepo, snapshotRepo } from './repo.js';
 import { createTasks, createContinuationComment } from './openai.js';
 import {
   createIssue, doctorGithub, ensureLabels, findExistingIssueByHash,
@@ -41,7 +41,6 @@ const argv = yargs(hideBin(process.argv))
 const workRoot = path.resolve(process.cwd(), '.work');
 const repoDir = path.join(workRoot, `${config.GITHUB_OWNER}-${config.GITHUB_REPO}`);
 const statePath = path.resolve(process.cwd(), config.STATE_FILE);
-const zipPath = path.resolve(process.cwd(), '.ai', 'jackhammer-repo-main.zip');
 const prAutomation = buildPullRequestAutomationPolicy(config);
 
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -355,8 +354,6 @@ async function runOnce(): Promise<void> {
   // 1. Sync repo and build snapshot.
   const git = await ensureRepo(repoDir);
   const snapshot = await snapshotRepo(repoDir, git);
-  await zipRepo(repoDir, zipPath);
-  snapshot.zipPath = zipPath;
 
   const state = await loadState(statePath);
   if (state.lastCommitSha === snapshot.commitSha) {
@@ -495,7 +492,6 @@ async function runOnce(): Promise<void> {
   console.log(`Snapshot ${snapshot.commitSha}: ${snapshot.fileCount} files; asking OpenAI for tasks...`);
   const tasks = await createTasks(
     snapshot,
-    zipPath,
     state.extractedCopilotGuidance ?? null,
     state.recentCopilotResults,
   );

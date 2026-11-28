@@ -14,7 +14,6 @@ export type RepoSnapshot = {
   files: RepoFile[];
   recentChanges: string;
   packageHints: string[];
-  zipPath?: string;
 };
 
 export type AiTask = {
