@@ -55,7 +55,12 @@ export function isExcludedOutboundPath(relativePath: string): boolean {
   });
 }
 
-export type BoundedReadStage = 'after-path-check' | 'after-open' | 'after-read';
+export type BoundedReadStage =
+  | 'after-path-check'
+  | 'after-open'
+  | 'after-read'
+  | 'after-final-path-stat'
+  | 'before-final-path-resolution';
 
 export type BoundedReadTestHook = (
   stage: BoundedReadStage,
@@ -67,6 +72,27 @@ function assertContained(root: string, target: string): void {
   if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new OutboundContentError('repository path escapes the containment root');
   }
+}
+
+function assertOpenedHandleContainmentSupported(): void {
+  if (process.platform !== 'linux') {
+    throw new OutboundContentError(
+      `opened-handle containment verification is unsupported on ${process.platform}`,
+    );
+  }
+}
+
+async function assertOpenedHandleContained(root: string, fileDescriptor: number): Promise<void> {
+  assertOpenedHandleContainmentSupported();
+  let openedPath: string;
+  try {
+    openedPath = await fs.realpath(`/proc/self/fd/${fileDescriptor}`);
+  } catch {
+    throw new OutboundContentError(
+      'opened-handle containment verification is unavailable on linux',
+    );
+  }
+  assertContained(root, openedPath);
 }
 
 function sameIdentity(
@@ -103,16 +129,17 @@ export async function readBoundedRepositoryFile(
   if (beforePath.size > BigInt(maximumBytes)) {
     throw new OutboundContentError('repository input exceeds its byte limit');
   }
+  assertOpenedHandleContainmentSupported();
   await testHook?.('after-path-check', filePath);
 
-  const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
-  const handle = await fs.open(filePath, constants.O_RDONLY | noFollow);
+  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     await testHook?.('after-open', filePath);
     const opened = await handle.stat({ bigint: true });
     if (!sameIdentity(beforePath, opened) || opened.size > BigInt(maximumBytes)) {
       throw new OutboundContentError('repository input identity changed before reading');
     }
+    await assertOpenedHandleContained(canonicalRoot, handle.fd);
 
     const content = Buffer.alloc(maximumBytes + 1);
     let offset = 0;
@@ -125,9 +152,13 @@ export async function readBoundedRepositoryFile(
       throw new OutboundContentError('repository input grew beyond its byte limit');
     }
     await testHook?.('after-read', filePath);
+    await assertOpenedHandleContained(canonicalRoot, handle.fd);
 
     const afterHandle = await handle.stat({ bigint: true });
     const afterPath = await fs.lstat(filePath, { bigint: true });
+    await testHook?.('after-final-path-stat', filePath);
+    await assertOpenedHandleContained(canonicalRoot, handle.fd);
+    await testHook?.('before-final-path-resolution', filePath);
     const canonicalAfterPath = await fs.realpath(filePath);
     assertContained(canonicalRoot, canonicalAfterPath);
     if (!sameIdentity(opened, afterHandle) || !sameIdentity(opened, afterPath)

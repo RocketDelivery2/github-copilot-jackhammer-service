@@ -4,9 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { snapshotRepo } from '../repo.js';
+import type { RepoSnapshot } from '../types.js';
 import {
   MAX_GITIGNORE_BYTES,
   MAX_GITIGNORE_TOTAL_BYTES,
+  derivePackageHints,
   readBoundedRepositoryFile,
 } from '../outbound-content.js';
 
@@ -34,7 +36,35 @@ describe('outbound repository safety', () => {
     raw: async () => 'abc1234567890123456789012345678901234567',
   } as any;
 
-  it('excludes pem, key, and nested env files from text context', async () => {
+  const unsupportedHandleContainmentReason =
+    `opened-handle containment verification is unsupported on ${process.platform}`;
+
+  function itWithHandleVerifiedReads(name: string, run: () => Promise<void>): void {
+    it(name, {
+      skip: process.platform === 'linux' ? false : unsupportedHandleContainmentReason,
+    }, run);
+  }
+
+  function snapshotWithReadContent(content: string): RepoSnapshot {
+    const file = {
+      path: 'README.md',
+      bytes: Buffer.byteLength(content, 'utf8'),
+      content,
+    };
+    return {
+      owner: 'RocketDelivery2',
+      repo: 'github-copilot-jackhammer-service',
+      baseBranch: 'main',
+      commitSha: 'a'.repeat(40),
+      generatedAt: new Date().toISOString(),
+      fileCount: 1,
+      files: [file],
+      recentChanges: 'a'.repeat(40),
+      packageHints: derivePackageHints([file]),
+    };
+  }
+
+  itWithHandleVerifiedReads('excludes pem, key, and nested env files from text context', async () => {
     await withFixture(async root => {
       await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
       await fs.writeFile(path.join(root, 'private.pem'), '-----BEGIN PRIVATE KEY-----');
@@ -51,11 +81,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('refuses symlinks escaping the repository root', async context => {
-    if (process.platform === 'win32') {
-      context.skip('Windows file symlink semantics are not covered by this test');
-      return;
-    }
+  itWithHandleVerifiedReads('refuses symlinks escaping the repository root', async () => {
     await withFixture(async root => {
       await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
       const outside = path.join(root, '..', 'jackhammer-outside.txt');
@@ -72,7 +98,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('skips ordinary binary files without reading them', async () => {
+  itWithHandleVerifiedReads('skips ordinary binary files without reading them', async () => {
     await withFixture(async root => {
       await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
       await fs.writeFile(path.join(root, 'unexpected.bin'), Buffer.from([0, 1, 2, 3]));
@@ -81,7 +107,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('skips very large unknown-extension files without reading them', async () => {
+  itWithHandleVerifiedReads('skips very large unknown-extension files without reading them', async () => {
     await withFixture(async root => {
       await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
       const unknownFile = await fs.open(path.join(root, 'large.opaque'), 'w');
@@ -95,7 +121,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('fails closed when a recognized text file is not valid UTF-8', async () => {
+  itWithHandleVerifiedReads('fails closed when a recognized text file is not valid UTF-8', async () => {
     await withFixture(async root => {
       await fs.writeFile(path.join(root, 'README.md'), Buffer.from([0xff, 0xfe, 0xfd]));
       await assert.rejects(() => snapshotRepo(root, git), /unsupported repository text encoding/);
@@ -127,7 +153,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('does not classify nested excluded files as repository context', async () => {
+  itWithHandleVerifiedReads('does not classify nested excluded files as repository context', async () => {
     await withFixture(async root => {
       await fs.mkdir(path.join(root, 'nested'));
       await fs.writeFile(path.join(root, 'nested', 'README.md'), '# Nested');
@@ -137,7 +163,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('does not let nested ignore negation re-include hard-excluded paths', async () => {
+  itWithHandleVerifiedReads('does not let nested ignore negation re-include hard-excluded paths', async () => {
     await withFixture(async root => {
       await fs.mkdir(path.join(root, 'nested'));
       await fs.writeFile(path.join(root, 'nested', '.gitignore'), 'secrets.txt\n!secrets.txt\n');
@@ -148,7 +174,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('rejects nested ignore files beyond the aggregate byte limit before provider invocation', async () => {
+  itWithHandleVerifiedReads('rejects nested ignore files beyond the aggregate byte limit before provider invocation', async () => {
     await withFixture(async root => {
       await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
       const ignoreContent = '# x\n'.repeat(Math.floor(MAX_GITIGNORE_BYTES / 4));
@@ -181,7 +207,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('does not derive package hints from an ignored package.json', async () => {
+  itWithHandleVerifiedReads('does not derive package hints from an ignored package.json', async () => {
     await withFixture(async root => {
       await fs.writeFile(path.join(root, '.gitignore'), 'package.json\n');
       await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
@@ -192,7 +218,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('derives byte-bounded package hints from the validated snapshot files', async () => {
+  itWithHandleVerifiedReads('derives byte-bounded package hints from the validated snapshot files', async () => {
     await withFixture(async root => {
       await fs.writeFile(path.join(root, 'README.md'), `# Safe project\n${'é'.repeat(7_000)}`);
       const snapshot = await snapshotRepo(root, git);
@@ -211,7 +237,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('detects replacement between path validation and opening', async () => {
+  itWithHandleVerifiedReads('detects replacement between path validation and opening', async () => {
     await withFixture(async root => {
       const file = path.join(root, 'input.md');
       const replacement = path.join(root, 'replacement.md');
@@ -229,7 +255,7 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('detects growth after the bounded read', async () => {
+  itWithHandleVerifiedReads('detects growth after the bounded read', async () => {
     await withFixture(async root => {
       const file = path.join(root, 'input.md');
       await fs.writeFile(file, 'small');
@@ -239,6 +265,70 @@ describe('outbound repository safety', () => {
         }),
         /identity changed while reading/,
       );
+    });
+  });
+
+  itWithHandleVerifiedReads('rejects a parent-directory swap before final path resolution without calling the provider', async () => {
+    await withFixture(async root => {
+      const parentDirectory = path.join(root, 'nested');
+      const file = path.join(parentDirectory, 'README.md');
+      const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'jackhammer-outside-parent-'));
+      const movedDirectory = path.join(outsideRoot, 'nested');
+      await fs.mkdir(parentDirectory);
+      await fs.writeFile(file, 'outside directory content');
+
+      const { createTasks } = await import('../openai.js');
+      let providerCalls = 0;
+      try {
+        await assert.rejects(async () => {
+          const buffer = await readBoundedRepositoryFile(root, file, 100, async stage => {
+            if (stage === 'after-final-path-stat') {
+              await fs.rename(parentDirectory, movedDirectory);
+              await fs.symlink(movedDirectory, parentDirectory);
+            }
+            if (stage === 'before-final-path-resolution') {
+              await fs.rm(parentDirectory, { recursive: true, force: true });
+              await fs.rename(movedDirectory, parentDirectory);
+            }
+          });
+          await createTasks(snapshotWithReadContent(buffer.toString('utf8')), null, [], {
+            responses: {
+              create: async () => {
+                providerCalls += 1;
+                return { output_text: '{"tasks":[]}' };
+              },
+            },
+          });
+        }, /repository path escapes the containment root/);
+        assert.equal(providerCalls, 0);
+      } finally {
+        await fs.rm(parentDirectory, { recursive: true, force: true });
+        await fs.rm(outsideRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('fails closed before provider invocation when opened-handle containment is unsupported', async context => {
+    if (process.platform === 'linux') {
+      context.skip('Linux opened-handle containment is verified through /proc/self/fd');
+      return;
+    }
+    await withFixture(async root => {
+      await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
+      const { createTasks } = await import('../openai.js');
+      let providerCalls = 0;
+      await assert.rejects(async () => {
+        const snapshot = await snapshotRepo(root, git);
+        await createTasks(snapshot, null, [], {
+          responses: {
+            create: async () => {
+              providerCalls += 1;
+              return { output_text: '{"tasks":[]}' };
+            },
+          },
+        });
+      }, /opened-handle containment verification is unsupported on/);
+      assert.equal(providerCalls, 0);
     });
   });
 
