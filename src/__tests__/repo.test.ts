@@ -274,24 +274,20 @@ describe('outbound repository safety', () => {
       const file = path.join(parentDirectory, 'README.md');
       const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'jackhammer-outside-parent-'));
       const movedDirectory = path.join(outsideRoot, 'original-nested');
-      const outsideDirectory = path.join(outsideRoot, 'external-nested');
       await fs.mkdir(parentDirectory);
-      await fs.mkdir(outsideDirectory);
       await fs.writeFile(file, 'safe repository content');
-      await fs.writeFile(path.join(outsideDirectory, 'README.md'), 'outside directory content');
 
       const { createTasks } = await import('../openai.js');
       let providerCalls = 0;
       let originalMoved = false;
       let linkInstalled = false;
-      let outsideMovedIntoRoot = false;
       try {
         await assert.rejects(async () => {
           const buffer = await readBoundedRepositoryFile(root, file, 100, async (stage, _filePath, component) => {
             if (stage === 'after-path-check') {
               await fs.rename(parentDirectory, movedDirectory);
               originalMoved = true;
-              await fs.symlink(outsideDirectory, parentDirectory);
+              await fs.symlink(movedDirectory, parentDirectory);
               linkInstalled = true;
             }
             if (stage === 'after-directory-open-attempt'
@@ -304,8 +300,8 @@ describe('outbound repository safety', () => {
             if (stage === 'after-open' && linkInstalled) {
               await fs.unlink(parentDirectory);
               linkInstalled = false;
-              await fs.rename(outsideDirectory, parentDirectory);
-              outsideMovedIntoRoot = true;
+              await fs.rename(movedDirectory, parentDirectory);
+              originalMoved = false;
             }
           });
           await createTasks(snapshotWithReadContent(buffer.toString('utf8')), null, [], {
@@ -321,7 +317,6 @@ describe('outbound repository safety', () => {
         assert.equal(await fs.readFile(file, 'utf8'), 'safe repository content');
       } finally {
         if (linkInstalled) await fs.unlink(parentDirectory);
-        if (outsideMovedIntoRoot) await fs.rename(parentDirectory, outsideDirectory);
         if (originalMoved) await fs.rename(movedDirectory, parentDirectory);
         await fs.rm(outsideRoot, { recursive: true, force: true });
       }
