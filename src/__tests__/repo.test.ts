@@ -4,7 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { snapshotRepo } from '../repo.js';
-import { readBoundedRepositoryFile } from '../outbound-content.js';
+import {
+  MAX_GITIGNORE_BYTES,
+  MAX_GITIGNORE_TOTAL_BYTES,
+  readBoundedRepositoryFile,
+} from '../outbound-content.js';
 
 describe('outbound repository safety', () => {
   async function withFixture<T>(run: (root: string) => Promise<T>): Promise<T> {
@@ -47,8 +51,9 @@ describe('outbound repository safety', () => {
     });
   });
 
-  it('refuses symlinks escaping the repository root', async () => {
+  it('refuses symlinks escaping the repository root', async context => {
     if (process.platform === 'win32') {
+      context.skip('Windows file symlink semantics are not covered by this test');
       return;
     }
     await withFixture(async root => {
@@ -73,6 +78,20 @@ describe('outbound repository safety', () => {
       await fs.writeFile(path.join(root, 'unexpected.bin'), Buffer.from([0, 1, 2, 3]));
       const snapshot = await snapshotRepo(root, git);
       assert.equal(snapshot.files.some(file => file.path === 'unexpected.bin'), false);
+    });
+  });
+
+  it('skips very large unknown-extension files without reading them', async () => {
+    await withFixture(async root => {
+      await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
+      const unknownFile = await fs.open(path.join(root, 'large.opaque'), 'w');
+      try {
+        await unknownFile.truncate(16 * 1024 * 1024);
+      } finally {
+        await unknownFile.close();
+      }
+      const snapshot = await snapshotRepo(root, git);
+      assert.deepEqual(snapshot.files.map(file => file.path), ['README.md']);
     });
   });
 
@@ -126,6 +145,50 @@ describe('outbound repository safety', () => {
       await fs.writeFile(path.join(root, 'nested', 'README.md'), '# Safe nested docs');
       const snapshot = await snapshotRepo(root, git);
       assert.equal(snapshot.files.some(file => file.path.endsWith('secrets.txt')), false);
+    });
+  });
+
+  it('rejects nested ignore files beyond the aggregate byte limit before provider invocation', async () => {
+    await withFixture(async root => {
+      await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
+      const ignoreContent = '# x\n'.repeat(Math.floor(MAX_GITIGNORE_BYTES / 4));
+      const ignoreFileCount = Math.floor(
+        MAX_GITIGNORE_TOTAL_BYTES / Buffer.byteLength(ignoreContent, 'utf8'),
+      ) + 1;
+      await fs.writeFile(path.join(root, '.gitignore'), ignoreContent);
+
+      let directory = root;
+      for (let index = 1; index < ignoreFileCount; index += 1) {
+        directory = path.join(directory, `nested-${index}`);
+        await fs.mkdir(directory);
+        await fs.writeFile(path.join(directory, '.gitignore'), ignoreContent);
+      }
+
+      const { createTasks } = await import('../openai.js');
+      let providerCalls = 0;
+      await assert.rejects(async () => {
+        const snapshot = await snapshotRepo(root, git);
+        await createTasks(snapshot, null, [], {
+          responses: {
+            create: async () => {
+              providerCalls += 1;
+              return { output_text: '{"tasks":[]}' };
+            },
+          },
+        });
+      }, /aggregate byte limit/);
+      assert.equal(providerCalls, 0);
+    });
+  });
+
+  it('does not derive package hints from an ignored package.json', async () => {
+    await withFixture(async root => {
+      await fs.writeFile(path.join(root, '.gitignore'), 'package.json\n');
+      await fs.writeFile(path.join(root, 'README.md'), '# Safe project');
+      await fs.writeFile(path.join(root, 'package.json'), '{"name":"ignored"}');
+      const snapshot = await snapshotRepo(root, git);
+      assert.equal(snapshot.files.some(file => file.path === 'package.json'), false);
+      assert.equal(snapshot.packageHints.some(hint => hint.startsWith('package.json:\n')), false);
     });
   });
 

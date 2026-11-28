@@ -13,6 +13,7 @@ export class OutboundContentError extends Error {
 
 export const MAX_REPOSITORY_TEXT_FILE_BYTES = 80_000;
 export const MAX_GITIGNORE_BYTES = 64_000;
+export const MAX_GITIGNORE_TOTAL_BYTES = 256_000;
 export const MAX_REPOSITORY_TEXT_FILES = 80;
 export const MAX_REPOSITORY_CONTEXT_BYTES = 450_000;
 export const MAX_REPOSITORY_ENTRIES = 10_000;

@@ -11,6 +11,7 @@ import {
   derivePackageHints,
   isExcludedOutboundPath,
   MAX_GITIGNORE_BYTES,
+  MAX_GITIGNORE_TOTAL_BYTES,
   MAX_REPOSITORY_ENTRIES,
   MAX_REPOSITORY_PATH_BYTES,
   MAX_REPOSITORY_PATH_DEPTH,
@@ -42,6 +43,7 @@ const TEXT_EXTENSIONS = /\.(ts|tsx|js|jsx|json|md|yml|yaml|css|scss|html|txt|sql
 const SPECIAL_TEXT_NAMES = new Set(['Dockerfile', 'Procfile', 'Makefile']);
 
 type IgnoreRule = { base: string; matcher: Ignore };
+type IgnoreReadBudget = { bytesRead: number };
 type RepositoryEntry = { path: string; bytes: number };
 
 function isHardExcludedPath(relativePath: string): boolean {
@@ -97,14 +99,34 @@ async function loadIgnoreRules(
   directory: string,
   relativeDirectory: string,
   inherited: readonly IgnoreRule[],
+  ignoreReadBudget: IgnoreReadBudget,
 ): Promise<IgnoreRule[]> {
   const rules = [...inherited];
   try {
-    const content = decodeRepositoryText(await readBoundedRepositoryFile(
-      root,
-      path.join(directory, '.gitignore'),
-      MAX_GITIGNORE_BYTES,
-    ));
+    const remainingBytes = MAX_GITIGNORE_TOTAL_BYTES - ignoreReadBudget.bytesRead;
+    if (remainingBytes < 0) {
+      throw new OutboundContentError('repository .gitignore files exceed their aggregate byte limit');
+    }
+    let buffer: Buffer;
+    try {
+      buffer = await readBoundedRepositoryFile(
+        root,
+        path.join(directory, '.gitignore'),
+        Math.min(MAX_GITIGNORE_BYTES, remainingBytes),
+      );
+    } catch (error) {
+      if (remainingBytes < MAX_GITIGNORE_BYTES
+        && error instanceof OutboundContentError
+        && error.message.endsWith('repository input exceeds its byte limit')) {
+        throw new OutboundContentError('repository .gitignore files exceed their aggregate byte limit');
+      }
+      throw error;
+    }
+    if (buffer.length > remainingBytes) {
+      throw new OutboundContentError('repository .gitignore files exceed their aggregate byte limit');
+    }
+    ignoreReadBudget.bytesRead += buffer.length;
+    const content = decodeRepositoryText(buffer);
     rules.push({ base: relativeDirectory, matcher: ignoreFactory().add(content) });
   } catch (error) {
     if (!isMissingFile(error)) throw error;
@@ -122,8 +144,9 @@ async function walk(
   relativeDirectory: string,
   inheritedRules: readonly IgnoreRule[],
   entriesSeen: { count: number },
+  ignoreReadBudget: IgnoreReadBudget,
 ): Promise<RepositoryEntry[]> {
-  const rules = await loadIgnoreRules(root, directory, relativeDirectory, inheritedRules);
+  const rules = await loadIgnoreRules(root, directory, relativeDirectory, inheritedRules, ignoreReadBudget);
   const canonicalRoot = await fs.realpath(root);
   const canonicalDirectory = await fs.realpath(directory);
   const directoryRelative = path.relative(canonicalRoot, canonicalDirectory);
@@ -153,7 +176,7 @@ async function walk(
       throw new OutboundContentError('symbolic links and reparse points are not allowed');
     }
     if (stat.isDirectory()) {
-      files.push(...await walk(root, absolutePath, relativePath, rules, entriesSeen));
+      files.push(...await walk(root, absolutePath, relativePath, rules, entriesSeen, ignoreReadBudget));
       continue;
     }
     if (!stat.isFile()) {
@@ -180,7 +203,7 @@ export async function snapshotRepo(workDir: string, git: SimpleGit): Promise<Rep
     throw new OutboundContentError('repository history is missing, ambiguous, or exceeds its byte limit');
   }
   const rootRules = [{ base: '', matcher: ignoreFactory().add(DEFAULT_IGNORES) }];
-  const all = await walk(workDir, workDir, '', rootRules, { count: 0 });
+  const all = await walk(workDir, workDir, '', rootRules, { count: 0 }, { bytesRead: 0 });
   all.sort((a, b) => scoreFile(a.path) - scoreFile(b.path));
 
   const files: RepoFile[] = [];

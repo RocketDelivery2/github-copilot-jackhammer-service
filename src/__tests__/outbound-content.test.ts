@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { RepoSnapshot } from '../types.js';
+import type { CopilotGuidance, RepoSnapshot } from '../types.js';
+import {
+  MAX_GUIDANCE_FIELD_BYTES,
+  MAX_RECENT_CHANGES_BYTES,
+} from '../outbound-content.js';
 
 function repoFile(path: string, content: string) {
   return { path, content, bytes: Buffer.byteLength(content, 'utf8') };
@@ -110,6 +114,75 @@ describe('provider outbound privacy', () => {
           },
         }),
         /configured limits/,
+      );
+      assert.equal(providerCalls, 0);
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousKey;
+      if (previousGithub === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousGithub;
+    }
+  });
+
+  it('rejects oversized recent history before provider invocation', async () => {
+    const previousKey = process.env.OPENAI_API_KEY;
+    const previousGithub = process.env.GITHUB_TOKEN;
+    process.env.OPENAI_API_KEY = 'test-key';
+    process.env.GITHUB_TOKEN = 'test-token';
+    try {
+      const { createTasks } = await import('../openai.js');
+      let providerCalls = 0;
+      await assert.rejects(
+        () => createTasks(snapshot({
+          recentChanges: 'a'.repeat(MAX_RECENT_CHANGES_BYTES + 1),
+        }), null, [], {
+          responses: {
+            create: async () => {
+              providerCalls += 1;
+              return { output_text: '{"tasks":[]}' };
+            },
+          },
+        }),
+        /repository history exceeds its byte limit/,
+      );
+      assert.equal(providerCalls, 0);
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousKey;
+      if (previousGithub === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousGithub;
+    }
+  });
+
+  it('rejects oversized guidance before provider invocation', async () => {
+    const previousKey = process.env.OPENAI_API_KEY;
+    const previousGithub = process.env.GITHUB_TOKEN;
+    process.env.OPENAI_API_KEY = 'test-key';
+    process.env.GITHUB_TOKEN = 'test-token';
+    try {
+      const { createTasks } = await import('../openai.js');
+      const guidance: CopilotGuidance = {
+        planSteps: [],
+        recommendedNextPR: null,
+        notes: [],
+        validation: [],
+        blockers: [],
+        errors: [],
+        hasCopilotQuestion: false,
+        rawText: 'x'.repeat(MAX_GUIDANCE_FIELD_BYTES + 1),
+        extractedAt: '2026-11-28T00:00:00.000Z',
+      };
+      let providerCalls = 0;
+      await assert.rejects(
+        () => createTasks(snapshot(), guidance, [], {
+          responses: {
+            create: async () => {
+              providerCalls += 1;
+              return { output_text: '{"tasks":[]}' };
+            },
+          },
+        }),
+        /guidance field exceeds its byte limit/,
       );
       assert.equal(providerCalls, 0);
     } finally {
