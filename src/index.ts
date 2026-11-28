@@ -195,11 +195,11 @@ async function handleLinkedPR(state: QueueState, active: ActiveWorkItem): Promis
 
   // Checks pass - maybe approve and/or merge.
   const alreadyApproved = reviews.some(r => r.state === 'APPROVED');
-  if (prAutomation.autoApprove && !alreadyApproved) {
+  if (!config.DRY_RUN && prAutomation.autoApprove && !alreadyApproved) {
     await approvePR(prNumber);
   }
 
-  if (prAutomation.autoMerge && pr.mergeable !== false) {
+  if (!config.DRY_RUN && prAutomation.autoMerge && pr.mergeable !== false) {
     await mergePR(prNumber, prAutomation.mergeMethod);
     await completeActiveWork(state, active, prNumber, pr.headRef);
     return false;
@@ -212,10 +212,10 @@ async function handleLinkedPR(state: QueueState, active: ActiveWorkItem): Promis
 async function completeActiveWork(state: QueueState, active: ActiveWorkItem, prNumber: number, headRef: string): Promise<void> {
   recordResult(state, active, 'merged', `PR #${prNumber} merged successfully.`);
 
-  if (prAutomation.closeIssueAfterMerge) {
+  if (!config.DRY_RUN && prAutomation.closeIssueAfterMerge) {
     await closeIssue(active.issueNumber);
   }
-  if (prAutomation.deleteBranchAfterMerge) {
+  if (!config.DRY_RUN && prAutomation.deleteBranchAfterMerge) {
     await deleteBranch(headRef);
   }
   state.activeWorkItem = undefined;
